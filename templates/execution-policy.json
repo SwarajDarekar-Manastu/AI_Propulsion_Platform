@@ -1,0 +1,14 @@
+{
+  "reviewPolicy": "not_creator",
+  "executionPolicy": {
+    "mode": "normal",
+    "commentRequired": true,
+    "maxReviewRounds": 3,
+    "stages": [
+      { "type": "review",   "participants": [ { "type": "agent", "agentId": "SENIOR_DEVELOPER_ID" } ] },
+      { "type": "review",   "participants": [ { "type": "agent", "agentId": "VALIDATION_ENGINEER_ID" } ] },
+      { "type": "review",   "participants": [ { "type": "agent", "agentId": "QA_ENGINEER_ID" } ] },
+      { "type": "approval", "participants": [ { "type": "user",  "userId":  "BOARD_USER_ID" } ] }
+    ]
+  }
+}

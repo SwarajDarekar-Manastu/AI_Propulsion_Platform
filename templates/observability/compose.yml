@@ -1,0 +1,91 @@
+# Self-hosted observability for the department, on the office LAN.
+#   GlitchTip 6 : errors, performance, logs and uptime checks. Apps report with any Sentry SDK.
+#   Jaeger 2.21 : OpenTelemetry traces. Apps send OTLP to ports 4317/4318.
+# GlitchTip's service block follows GlitchTip's own compose.sample.yml, with a database password,
+# MCP turned on, and ports bound to the LAN address only.
+#
+# Run from this folder, as an admin with Docker (never as the paperclip user):
+#   cp .env.example .env    # then fill it in
+#   docker compose up -d
+# See README.md in this folder for the rest of the setup.
+
+x-glitchtip-env: &glitchtip-env
+  DATABASE_URL: postgres://glitchtip:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}@postgres:5432/glitchtip
+  VALKEY_URL: redis://valkey:6379
+  SECRET_KEY: ${GLITCHTIP_SECRET_KEY:?set GLITCHTIP_SECRET_KEY in .env}
+  GLITCHTIP_DOMAIN: ${GLITCHTIP_DOMAIN:?set GLITCHTIP_DOMAIN in .env}
+  DEFAULT_FROM_EMAIL: ${GLITCHTIP_FROM_EMAIL:-glitchtip@localhost}
+  EMAIL_URL: ${GLITCHTIP_EMAIL_URL:-consolemail://}
+  ENABLE_ADMIN: "False"
+  ENABLE_OPENAPI: "False"
+  GLITCHTIP_ENABLE_MCP: "True"
+  GLITCHTIP_ENABLE_DUCKDB: "False"
+  ENABLE_USER_REGISTRATION: "False"
+
+services:
+  postgres:
+    image: postgres:18
+    environment:
+      POSTGRES_USER: glitchtip
+      POSTGRES_DB: glitchtip
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
+    restart: unless-stopped
+    volumes:
+      - pg-data:/var/lib/postgresql
+    networks: [observability]
+
+  valkey:
+    image: valkey/valkey:9
+    restart: unless-stopped
+    networks: [observability]
+
+  glitchtip:
+    image: glitchtip/glitchtip:${GLITCHTIP_VERSION:-6}
+    depends_on: [postgres, valkey]
+    environment:
+      <<: *glitchtip-env
+      SERVER_ROLE: all_in_one
+    ports:
+      - "${LAN_IP:?set LAN_IP in .env}:8000:8000"
+    restart: unless-stopped
+    volumes:
+      - uploads:/code/uploads
+    networks: [observability]
+
+  # Badger needs a writable data folder; Jaeger's image runs as UID 10001.
+  jaeger-data-permissions:
+    image: busybox:1.37
+    command: ["chown", "-R", "10001:10001", "/badger"]
+    volumes:
+      - jaeger-data:/badger
+    restart: "no"
+
+  jaeger:
+    image: cr.jaegertracing.io/jaegertracing/jaeger:2.21.0
+    depends_on:
+      jaeger-data-permissions:
+        condition: service_completed_successfully
+    command: ["--config", "/etc/jaeger/config.yaml"]
+    environment:
+      JAEGER_LISTEN_HOST: 0.0.0.0
+      JAEGER_BADGER_DIR: /badger
+    ports:
+      - "${LAN_IP}:16686:16686" # UI, query API (/api/v3) and MCP (/api/ai/mcp/)
+      - "${LAN_IP}:4317:4317"   # OTLP gRPC
+      - "${LAN_IP}:4318:4318"   # OTLP HTTP
+    volumes:
+      - ./jaeger-config.yaml:/etc/jaeger/config.yaml:ro
+      - jaeger-data:/badger
+    restart: unless-stopped
+    networks: [observability]
+
+networks:
+  observability:
+    ipam:
+      config:
+        - subnet: 172.30.70.0/24 # fixed, so one ufw rule can let GlitchTip reach Paperclip
+
+volumes:
+  pg-data:
+  uploads:
+  jaeger-data:
