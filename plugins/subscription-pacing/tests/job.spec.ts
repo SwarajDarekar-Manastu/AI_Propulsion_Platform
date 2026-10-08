@@ -8,6 +8,7 @@ import { resolveSettings } from "../src/settings.js";
 
 type Agent = NonNullable<Awaited<ReturnType<PluginContext["agents"]["get"]>>>;
 type Issue = NonNullable<Awaited<ReturnType<PluginContext["issues"]["get"]>>>;
+type Company = NonNullable<Awaited<ReturnType<PluginContext["companies"]["get"]>>>;
 
 const COMPANY = "11111111-1111-1111-1111-111111111111";
 const DIGEST_ISSUE = "22222222-2222-2222-2222-222222222222";
@@ -305,5 +306,33 @@ describe("pace-agents job", () => {
       released: [],
     });
     expect(text).toContain("**Estimates are off.**");
+  });
+});
+
+describe("company context", () => {
+  const CONFIG_ONLY_COMPANY = "33333333-3333-3333-3333-333333333333";
+
+  function hostWith(configs: Record<string, Record<string, unknown>>): PluginContext["config"]["get"] {
+    return async (companyId?: string) => {
+      const config = companyId === undefined ? undefined : configs[companyId];
+      if (config === undefined) throw new Error("company context is required");
+      return { ...config };
+    };
+  }
+
+  it("paces the company whose stored config it reads when the job runs unscoped", async () => {
+    const harness = await setup({}, [agent("a1", "idle")], [hot]);
+    harness.seed({ companies: [{ id: COMPANY, name: "Manastu" } as Company] });
+    harness.ctx.config.get = hostWith({ [COMPANY]: { ...calibrated, mode: "enforce" } });
+    await harness.runJob(JOB_KEY);
+    expect(await statusOf(harness, "a1")).toBe("paused");
+  });
+
+  it("skips a company with no stored config instead of failing the run", async () => {
+    const harness = await setup({}, [agent("a1", "idle")], [hot]);
+    harness.seed({ companies: [{ id: COMPANY, name: "Manastu" } as Company, { id: CONFIG_ONLY_COMPANY, name: "Unconfigured" } as Company] });
+    harness.ctx.config.get = hostWith({ [COMPANY]: { ...calibrated, mode: "enforce" } });
+    await expect(harness.runJob(JOB_KEY)).resolves.toBeUndefined();
+    expect(await statusOf(harness, "a1")).toBe("paused");
   });
 });
