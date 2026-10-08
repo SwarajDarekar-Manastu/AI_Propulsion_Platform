@@ -18,7 +18,6 @@ const manifest: PaperclipPluginManifestV1 = {
     "jobs.schedule",
     "database.namespace.migrate",
     "database.namespace.read",
-    "database.namespace.write",
     "issue.comments.create",
     "plugin.state.read",
     "plugin.state.write",

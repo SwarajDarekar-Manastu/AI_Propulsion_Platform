@@ -28,8 +28,8 @@ Set these in the plugin settings. Only `companyId` and the two ratios are requir
 | `sessionPauseAtPct` | 80 | Rule 1 threshold. |
 | `weeklyPaceLeadPts` | 10 | Rule 2 threshold. |
 | `agentWeeklySharePct` | 100 / agent count | Rule 3 threshold. |
-| `maxOpusSharePct` | 60 | Rule 4 threshold. |
-| `opusRuleMinWeekPct` | 5 | Rule 4 applies only above this weekly estimate. |
+| `maxOpusSharePct` | unset | Rule 4 threshold on the plan's Opus share. Unset turns rule 4 off. Six of the 12 seats run on Opus, so pick a limit above the department's normal mix, using the plan totals line in the digest. |
+| `opusRuleMinWeekPct` | 5 | Rule 4 applies only once the plan's weekly estimate is at least this percent. |
 | `cancelledRunAllowanceTokens` | 100000 | See the usage gap below. |
 | `maxPausesPerRun` | 2 | Cap on pauses in one run. |
 | `exemptAgentIds` | none | Agents never paused. |
@@ -42,20 +42,27 @@ The worker applies these defaults itself. It does not rely on the SDK to apply s
 
 Session estimate = tokens in the session window, converted with the ratios, divided by `sessionAllowancePctOfWeek`. Weekly estimate = tokens since the week reset, converted with the ratios. Tokens are `input_tokens + output_tokens` from `cost_events`.
 
-1. Pause when the session estimate reaches `sessionPauseAtPct`.
-2. Pause when the weekly estimate is more than `weeklyPaceLeadPts` ahead of the share of the week that has elapsed.
-3. Pause when the weekly estimate is above the agent's weekly share.
-4. Pause when Opus is more than `maxOpusSharePct` of the agent's weekly estimate.
+Rules 1, 2 and 4 measure the whole plan: the job sums the estimate over every agent. When one fires, the job pauses the non-exempt agents that use the most of that measure (session, week, or Opus), highest first, at most `maxPausesPerRun`. The next run checks again. Only rule 3 judges one agent on its own.
 
-Resume an agent when it is paused, the plugin paused it, and no rule fires any more.
+1. Plan session estimate reaches `sessionPauseAtPct`.
+2. Plan weekly estimate is more than `weeklyPaceLeadPts` ahead of the share of the week that has elapsed.
+3. An agent's weekly estimate is above its weekly share.
+4. Opus is more than `maxOpusSharePct` of the plan's weekly estimate (applies once the plan estimate is at least `opusRuleMinWeekPct`).
+
+Tokens of paused agents still count toward the plan, so a plan rule stays fired after the pauses. While the plugin holds an agent paused for a plan rule (session, pace or Opus), that rule orders no new pauses. One breach pauses one batch of at most `maxPausesPerRun` agents. Rule 3 is per agent and is unaffected. Put reviewers and other agents you never want paused in `exemptAgentIds`. The Network and Observability Engineer must be there (`model-roles.md`: never paused by pacing).
+
+## Resume
+
+The plugin resumes an agent only when it paused that agent and the windows of the rules that paused it have reset. A session pause ends `sessionHours` after the pause. A rule 3 pause ends when the next plan week starts. A pace pause ends when the plan's lead is back at or under `weeklyPaceLeadPts`. An Opus pause ends when the plan's Opus share is at or under `maxOpusSharePct`, the plan's weekly estimate is under `opusRuleMinWeekPct`, or the limit is unset. A pause with several reasons ends when every reason has ended. A pause is the plugin's own only while the agent is paused with the same `pausedAt` that `agents.pause` returned. If the Board resumes and pauses the agent again, `pausedAt` changes and the plugin lets go of it.
 
 ## Safety
 
 - An unset, zero, negative, or non-numeric ratio disables every rule. No estimate means no pause.
 - The default mode is `dry-run`. Pausing needs `mode: enforce`.
 - A run pauses at most `maxPausesPerRun` agents, highest weekly estimate first. The rest show as `deferred` in the digest.
-- The plugin keeps the agents it paused in plugin state and resumes only those. It drops an entry when the agent is no longer paused or its pause reason is `budget`, `company_archived`, or `import`.
-- Unverified: the plugin cannot tell its own pause from a Board pause with reason `manual` after it has paused the same agent. It treats `manual`, `system`, and empty reasons as its own.
+- The plugin keeps `agentId -> pausedAt, violations` in plugin state and resumes only those entries.
+- If `agents.pause` succeeds but the state write fails, the agent stays paused and the plugin will not resume it. The Board resumes it by hand.
+- If the pause response has no `pausedAt`, the plugin does not record the pause and never resumes that agent.
 
 ## Token source and the cancelled-run gap
 
@@ -65,9 +72,9 @@ A run that is cancelled (for example `issue_reassigned`) has no `usage_json` and
 
 ## Capabilities
 
-`agents.read`, `agents.pause`, `agents.resume`, `jobs.schedule`, `issue.comments.create`, `plugin.state.read`, `plugin.state.write`, `database.namespace.read`, `database.namespace.write`, `database.namespace.migrate`.
+`agents.read`, `agents.pause`, `agents.resume`, `jobs.schedule`, `issue.comments.create`, `plugin.state.read`, `plugin.state.write`, `database.namespace.read`, `database.namespace.migrate`.
 
-The database declaration forces the migrate capability and `migrationsDir`. The migration creates `pacing_events`, an audit row for each pause and resume.
+The database declaration forces the migrate capability and `migrationsDir`. `migrations/001_noop.sql` is a no-op (`SELECT 1;`). It only satisfies the `migrationsDir` requirement; the plugin owns no tables. The digest and the worker log record every action.
 
 ## Develop
 
