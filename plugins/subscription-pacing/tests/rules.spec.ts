@@ -224,7 +224,7 @@ describe("resume rule", () => {
   it("keeps an Opus pause while a ratio is unset and the limit is set", () => {
     const entry = paused(["opus-share"], "2026-10-06T09:00:00.000Z");
     const now = new Date("2026-10-06T10:00:00.000Z");
-    const state = { plan: planOf([{ id: "a", week: { opus: 6_000_000 } }]), weekElapsedPct: 50 };
+    const state = { plan: planEstimate([]), weekElapsedPct: 50 };
     expect(windowReset(entry, now, resolveSettings({ opusPctPerMillion: 1, maxOpusSharePct: 60 }), state)).toBe(false);
   });
 
