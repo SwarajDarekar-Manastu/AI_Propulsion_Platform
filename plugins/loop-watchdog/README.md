@@ -57,7 +57,7 @@ Every decision posts one comment to `digestIssueId` with the agent, the rule, th
 
 **Company context.** Every host call passes the event's `companyId`: `ctx.config.get`, `ctx.agents.get`, `ctx.agents.pause`, `ctx.issues.createComment`, and the database queries.
 
-**Clearing after a decision.** Clearing the wakes after a decision makes a Board resume hold. A loop that continues after a resume is paused again only after another `maxWakesPerTask + 1` starts. In `dry-run`, a loop of any length posts one digest per `maxWakesPerTask + 1` starts, not one per start.
+**Clearing after a decision.** Clearing the wakes after a decision makes a Board resume hold. A loop that continues after a resume is paused again only after another `maxWakesPerTask + 1` starts. In `dry-run`, a loop of any length posts one digest per `maxWakesPerTask + 1` starts, not one per start. The clear also means a redelivered start for a run already counted before a decision counts once more. It cannot pause an agent by itself.
 
 **Duplicate deliveries.** A redelivered `agent.run.started` with a run ID already in the agent's wake state counts once.
 
