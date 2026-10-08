@@ -1,18 +1,12 @@
 import type { PluginContext } from "@paperclipai/plugin-sdk";
-import { decide, estimate, fairSharePct, weekElapsedPct, weekStart, type AgentUsage, type Decision, type Estimate, type Violation } from "./rules.js";
+import { choosePauses, emptyUsage, estimate, fairSharePct, weekElapsedPct, weekStart, windowReset, type Decision, type Estimate, type PausedEntry } from "./rules.js";
 import { resolveSettings, type Settings } from "./settings.js";
 import { loadUsage } from "./usage.js";
-
-interface PausedEntry {
-  pausedAt: string;
-  violations: Violation[];
-}
 
 type PausedSet = Record<string, PausedEntry>;
 
 const PAUSED_KEY = { scopeKind: "instance", stateKey: "paused-agents" } as const;
 const DIGEST_KEY = { scopeKind: "instance", stateKey: "last-digest-at" } as const;
-const OTHER_PAUSE_REASONS = new Set(["budget", "company_archived", "import"]);
 const HOUR_MS = 60 * 60 * 1000;
 
 export interface AgentReport {
@@ -34,8 +28,8 @@ export interface PacingResult {
   released: string[];
 }
 
-function emptyUsage(agentId: string): AgentUsage {
-  return { agentId, session: { opus: 0, sonnet: 0 }, week: { opus: 0, sonnet: 0 }, sessionCancelledRuns: 0, weekCancelledRuns: 0 };
+function isoOrNull(value: Date | string | null | undefined): string | null {
+  return value === null || value === undefined ? null : new Date(value).toISOString();
 }
 
 export async function runPacing(ctx: PluginContext, now: Date): Promise<PacingResult | null> {
@@ -48,8 +42,7 @@ export async function runPacing(ctx: PluginContext, now: Date): Promise<PacingRe
 
   const agents = (await ctx.agents.list({ companyId, limit: 500 })).filter((a) => a.status !== "terminated");
   const sessionStart = new Date(now.getTime() - settings.sessionHours * HOUR_MS);
-  const start = weekStart(now, settings);
-  const usage = await loadUsage(ctx, companyId, start, sessionStart);
+  const usage = await loadUsage(ctx, companyId, weekStart(now, settings), sessionStart);
 
   const stored = ((await ctx.state.get(PAUSED_KEY)) as PausedSet | null) ?? {};
   const pausedSet: PausedSet = {};
@@ -57,7 +50,7 @@ export async function runPacing(ctx: PluginContext, now: Date): Promise<PacingRe
   for (const agent of agents) {
     const entry = stored[agent.id];
     if (!entry) continue;
-    const stillOurs = agent.status === "paused" && !OTHER_PAUSE_REASONS.has(agent.pauseReason ?? "");
+    const stillOurs = agent.status === "paused" && isoOrNull(agent.pausedAt) === entry.pausedAt;
     if (stillOurs) pausedSet[agent.id] = entry;
     else released.push(agent.id);
   }
@@ -66,21 +59,28 @@ export async function runPacing(ctx: PluginContext, now: Date): Promise<PacingRe
   const ctxPacing = { weekElapsedPct: elapsed, fairSharePct: fairSharePct(agents.length, settings) };
   const exempt = new Set(settings.exemptAgentIds);
 
+  const estimates = new Map(agents.map((a) => [a.id, estimate(usage.get(a.id) ?? emptyUsage(a.id), settings)]));
+  const candidates = agents.flatMap((a) => {
+    const est = estimates.get(a.id) ?? null;
+    return est === null ? [] : [{ agentId: a.id, estimate: est, exempt: exempt.has(a.id), paused: a.status === "paused" }];
+  });
+  const pauseOrders = new Map(choosePauses(candidates, ctxPacing, settings).map((o) => [o.agentId, o.violations]));
+
   const reports: AgentReport[] = agents.map((agent) => {
-    const agentUsage = usage.get(agent.id) ?? emptyUsage(agent.id);
-    const est = estimate(agentUsage, settings);
-    const decision = decide(
-      est,
-      {
-        paused: agent.status === "paused",
-        pausedByPlugin: agent.id in pausedSet,
-        pausedByOther: agent.status === "paused" && OTHER_PAUSE_REASONS.has(agent.pauseReason ?? ""),
-        exempt: exempt.has(agent.id),
-      },
-      ctxPacing,
-      settings,
-    );
-    return { agentId: agent.id, name: agent.name, status: agent.status, estimate: est, cancelledRuns: agentUsage.weekCancelledRuns, decision, outcome: "none" };
+    const entry = pausedSet[agent.id];
+    const violations = pauseOrders.get(agent.id);
+    let decision: Decision = { kind: "none" };
+    if (entry && windowReset(entry, now, settings)) decision = { kind: "resume" };
+    else if (!entry && agent.status !== "paused" && violations) decision = { kind: "pause", violations };
+    return {
+      agentId: agent.id,
+      name: agent.name,
+      status: agent.status,
+      estimate: estimates.get(agent.id) ?? null,
+      cancelledRuns: (usage.get(agent.id) ?? emptyUsage(agent.id)).weekCancelledRuns,
+      decision,
+      outcome: "none",
+    };
   });
 
   const enforce = settings.mode === "enforce";
@@ -98,7 +98,6 @@ export async function runPacing(ctx: PluginContext, now: Date): Promise<PacingRe
       await ctx.agents.resume(report.agentId, companyId);
       delete pausedSet[report.agentId];
       report.outcome = "resumed";
-      await recordEvent(ctx, report, "resume");
     } catch (error) {
       ctx.logger.error("Resume failed", { agentId: report.agentId, error: String(error) });
       report.outcome = "failed";
@@ -115,16 +114,18 @@ export async function runPacing(ctx: PluginContext, now: Date): Promise<PacingRe
       report.outcome = "deferred";
       continue;
     }
-    const reasons = report.decision.kind === "pause" ? report.decision.violations : [];
-    pausedSet[report.agentId] = { pausedAt: now.toISOString(), violations: reasons };
-    await ctx.state.set(PAUSED_KEY, pausedSet);
     try {
-      await ctx.agents.pause(report.agentId, companyId);
+      const paused = await ctx.agents.pause(report.agentId, companyId);
       pausedThisRun += 1;
       report.outcome = "paused";
-      await recordEvent(ctx, report, "pause");
+      const pausedAt = isoOrNull(paused.pausedAt);
+      if (pausedAt === null) {
+        ctx.logger.warn("Pause returned no pausedAt; the plugin will not resume this agent", { agentId: report.agentId });
+        continue;
+      }
+      pausedSet[report.agentId] = { pausedAt, violations: report.decision.kind === "pause" ? report.decision.violations : [] };
+      await ctx.state.set(PAUSED_KEY, pausedSet);
     } catch (error) {
-      delete pausedSet[report.agentId];
       ctx.logger.error("Pause failed", { agentId: report.agentId, error: String(error) });
       report.outcome = "failed";
     }
@@ -132,14 +133,6 @@ export async function runPacing(ctx: PluginContext, now: Date): Promise<PacingRe
 
   await ctx.state.set(PAUSED_KEY, pausedSet);
   return { settings, now, weekElapsedPct: elapsed, fairSharePct: ctxPacing.fairSharePct, agents: reports, released };
-}
-
-async function recordEvent(ctx: PluginContext, report: AgentReport, action: "pause" | "resume"): Promise<void> {
-  const reasons = report.decision.kind === "pause" ? report.decision.violations.join(",") : "";
-  await ctx.db.execute(
-    `INSERT INTO ${ctx.db.namespace}.pacing_events (agent_id, action, reasons, week_pct, session_pct) VALUES ($1::uuid, $2, $3, $4, $5)`,
-    [report.agentId, action, reasons, report.estimate?.weekPct ?? 0, report.estimate?.sessionPct ?? 0],
-  );
 }
 
 function fmt(n: number): string {
@@ -167,7 +160,7 @@ export function formatDigest(result: PacingResult): string {
   }
   const gap = result.agents.reduce((sum, r) => sum + r.cancelledRuns, 0);
   lines.push(``, `Cancelled runs with no usage record this week: ${gap}. Each is charged ${settings.cancelledRunAllowanceTokens} tokens at the Sonnet ratio.`);
-  if (result.released.length > 0) lines.push(``, `Stopped tracking ${result.released.length} agent(s) that someone else resumed or paused for another reason.`);
+  if (result.released.length > 0) lines.push(``, `Stopped tracking ${result.released.length} agent(s) that someone else resumed or paused again.`);
   return lines.join("\n");
 }
 

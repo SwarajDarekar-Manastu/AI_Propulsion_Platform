@@ -1,9 +1,10 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createTestHarness } from "@paperclipai/plugin-sdk/testing";
 import type { PluginContext } from "@paperclipai/plugin-sdk";
 import manifest, { JOB_KEY } from "../src/manifest.js";
 import plugin from "../src/worker.js";
-import { formatDigest } from "../src/pacing.js";
+import { formatDigest, runPacing } from "../src/pacing.js";
+import { resolveSettings } from "../src/settings.js";
 
 type Agent = NonNullable<Awaited<ReturnType<PluginContext["agents"]["get"]>>>;
 type Issue = NonNullable<Awaited<ReturnType<PluginContext["issues"]["get"]>>>;
@@ -12,9 +13,18 @@ const COMPANY = "11111111-1111-1111-1111-111111111111";
 const DIGEST_ISSUE = "22222222-2222-2222-2222-222222222222";
 const NOW = new Date("2026-10-08T12:00:00Z");
 
-function agent(id: string, status: Agent["status"], pauseReason: Agent["pauseReason"] = null): Agent {
-  return { id, companyId: COMPANY, name: `Agent ${id}`, status, pauseReason } as Agent;
+function agent(id: string, status: Agent["status"], pauseReason: Agent["pauseReason"] = null, pausedAt: Date | null = null): Agent {
+  return { id, companyId: COMPANY, name: `Agent ${id}`, status, pauseReason, pausedAt } as Agent;
 }
+
+beforeEach(() => {
+  vi.useFakeTimers({ toFake: ["Date"] });
+  vi.setSystemTime(NOW);
+});
+
+afterEach(() => {
+  vi.useRealTimers();
+});
 
 interface Row {
   agent_id: string;
@@ -27,6 +37,12 @@ async function setup(config: Record<string, unknown>, agents: Agent[], rows: Row
   const harness = createTestHarness({ manifest, config, capabilities: [...manifest.capabilities, "issue.comments.read"] });
   harness.seed({ agents, issues: [{ id: DIGEST_ISSUE, companyId: COMPANY, title: "Digest" } as Issue] });
   harness.ctx.db.query = (async (sql: string) => (sql.includes("heartbeat_runs") ? cancelled : rows)) as typeof harness.ctx.db.query;
+  const pause = harness.ctx.agents.pause.bind(harness.ctx.agents);
+  harness.ctx.agents.pause = async (agentId, companyId) => {
+    const paused = { ...(await pause(agentId, companyId)), pausedAt: new Date() };
+    harness.seed({ agents: [paused] });
+    return paused;
+  };
   await plugin.definition.setup(harness.ctx);
   return harness;
 }
@@ -52,7 +68,6 @@ describe("manifest", () => {
       "agents.resume",
       "database.namespace.migrate",
       "database.namespace.read",
-      "database.namespace.write",
       "issue.comments.create",
       "jobs.schedule",
       "plugin.state.read",
@@ -103,16 +118,33 @@ describe("pace-agents job", () => {
     expect(await Promise.all(agents.map((a) => statusOf(harness, a.id)))).toEqual(["paused", "paused", "idle"]);
   });
 
-  it("resumes only the agents it paused when their usage drops", async () => {
-    const agents = [agent("a1", "idle"), agent("a2", "paused", "manual")];
-    const harness = await setup({ ...calibrated, mode: "enforce" }, agents, [hot]);
+  it("resumes an agent it paused once the session window has passed", async () => {
+    const harness = await setup({ ...calibrated, mode: "enforce" }, [agent("a1", "idle")], [hot]);
     await harness.runJob(JOB_KEY);
     expect(await statusOf(harness, "a1")).toBe("paused");
 
     harness.ctx.db.query = (async () => []) as typeof harness.ctx.db.query;
-    await harness.runJob(JOB_KEY);
+    await runPacing(harness.ctx, new Date("2026-10-08T16:59:00Z"));
+    expect(await statusOf(harness, "a1")).toBe("paused");
+    await runPacing(harness.ctx, new Date("2026-10-08T17:00:00Z"));
     expect(await statusOf(harness, "a1")).toBe("idle");
+  });
+
+  it("does not resume an agent the Board paused", async () => {
+    const harness = await setup({ ...calibrated, mode: "enforce" }, [agent("a2", "paused", "manual", new Date("2026-10-08T01:00:00Z"))], []);
+    await runPacing(harness.ctx, new Date("2026-10-08T23:00:00Z"));
     expect(await statusOf(harness, "a2")).toBe("paused");
+  });
+
+  it("does not resume an agent the Board resumed and paused again after the plugin paused it", async () => {
+    const harness = await setup({ ...calibrated, mode: "enforce" }, [agent("a1", "idle")], [hot]);
+    await harness.runJob(JOB_KEY);
+    expect(await statusOf(harness, "a1")).toBe("paused");
+
+    harness.seed({ agents: [agent("a1", "paused", "manual", new Date("2026-10-08T12:10:00Z"))] });
+    harness.ctx.db.query = (async () => []) as typeof harness.ctx.db.query;
+    await runPacing(harness.ctx, new Date("2026-10-08T18:00:00Z"));
+    expect(await statusOf(harness, "a1")).toBe("paused");
   });
 
   it("charges cancelled runs without usage and reports them", async () => {
@@ -125,7 +157,7 @@ describe("pace-agents job", () => {
 
   it("says estimates are off when ratios are unset", () => {
     const text = formatDigest({
-      settings: { ...(JSON.parse("{}") as object), mode: "dry-run", opusPctPerMillion: null, sonnetPctPerMillion: null, cancelledRunAllowanceTokens: 0 } as never,
+      settings: resolveSettings({}),
       now: NOW,
       weekElapsedPct: 0,
       fairSharePct: 100,

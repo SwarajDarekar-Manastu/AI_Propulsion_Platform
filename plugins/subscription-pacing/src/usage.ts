@@ -1,5 +1,5 @@
 import type { PluginContext } from "@paperclipai/plugin-sdk";
-import type { AgentUsage } from "./rules.js";
+import { emptyUsage, type AgentUsage } from "./rules.js";
 
 interface TokenRow {
   agent_id: string;
@@ -33,16 +33,6 @@ WHERE r.company_id = $1::uuid
   AND COALESCE(r.started_at, r.created_at) >= LEAST($2::timestamptz, $3::timestamptz)
   AND NOT EXISTS (SELECT 1 FROM public.cost_events c WHERE c.heartbeat_run_id = r.id)
 GROUP BY r.agent_id`;
-
-function emptyUsage(agentId: string): AgentUsage {
-  return {
-    agentId,
-    session: { opus: 0, sonnet: 0 },
-    week: { opus: 0, sonnet: 0 },
-    sessionCancelledRuns: 0,
-    weekCancelledRuns: 0,
-  };
-}
 
 export async function loadUsage(
   ctx: PluginContext,

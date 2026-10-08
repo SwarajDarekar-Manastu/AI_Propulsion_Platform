@@ -26,20 +26,35 @@ export interface PacingContext {
   fairSharePct: number;
 }
 
+export interface PausedEntry {
+  pausedAt: string;
+  violations: Violation[];
+}
+
+export interface Candidate {
+  agentId: string;
+  estimate: Estimate;
+  exempt: boolean;
+  paused: boolean;
+}
+
+export interface PauseOrder {
+  agentId: string;
+  violations: Violation[];
+}
+
 export type Decision =
   | { kind: "pause"; violations: Violation[] }
   | { kind: "resume" }
   | { kind: "none" };
 
-export interface AgentPacingState {
-  paused: boolean;
-  pausedByPlugin: boolean;
-  pausedByOther: boolean;
-  exempt: boolean;
-}
-
 const WEEK_MS = 7 * 24 * 60 * 60 * 1000;
+const HOUR_MS = 60 * 60 * 1000;
 const MONDAY_EPOCH_MS = Date.UTC(1970, 0, 5);
+
+export function emptyUsage(agentId: string): AgentUsage {
+  return { agentId, session: { opus: 0, sonnet: 0 }, week: { opus: 0, sonnet: 0 }, sessionCancelledRuns: 0, weekCancelledRuns: 0 };
+}
 
 export function weekStart(now: Date, settings: Pick<Settings, "weekResetAnchor">): Date {
   const anchor = settings.weekResetAnchor === null ? MONDAY_EPOCH_MS : Date.parse(settings.weekResetAnchor);
@@ -74,21 +89,48 @@ export function estimate(usage: AgentUsage, settings: Settings): Estimate | null
   };
 }
 
-export function violations(est: Estimate, ctx: PacingContext, settings: Settings): Violation[] {
-  const found: Violation[] = [];
-  if (est.sessionPct >= settings.sessionPauseAtPct) found.push("session");
-  if (est.weekPct - ctx.weekElapsedPct > settings.weeklyPaceLeadPts) found.push("weekly-pace");
-  if (est.weekPct > ctx.fairSharePct) found.push("weekly-share");
-  if (est.weekPct >= settings.opusRuleMinWeekPct && (est.opusWeekPct / est.weekPct) * 100 > settings.maxOpusSharePct) found.push("opus-share");
-  return found;
+export function planEstimate(estimates: Estimate[]): Estimate {
+  const sum = (pick: (e: Estimate) => number) => estimates.reduce((total, e) => total + pick(e), 0);
+  return { sessionPct: sum((e) => e.sessionPct), weekPct: sum((e) => e.weekPct), opusWeekPct: sum((e) => e.opusWeekPct) };
 }
 
-export function decide(est: Estimate | null, state: AgentPacingState, ctx: PacingContext, settings: Settings): Decision {
-  if (est === null) return { kind: "none" };
-  const found = violations(est, ctx, settings);
-  if (!state.paused) {
-    return found.length > 0 && !state.exempt ? { kind: "pause", violations: found } : { kind: "none" };
+function topBy(candidates: Candidate[], measure: (e: Estimate) => number, limit: number): string[] {
+  return candidates
+    .filter((c) => !c.exempt && !c.paused && measure(c.estimate) > 0)
+    .sort((a, b) => measure(b.estimate) - measure(a.estimate))
+    .slice(0, limit)
+    .map((c) => c.agentId);
+}
+
+export function choosePauses(candidates: Candidate[], ctx: PacingContext, settings: Settings): PauseOrder[] {
+  const plan = planEstimate(candidates.map((c) => c.estimate));
+  const flagged = new Map<string, Violation[]>();
+  const flag = (ids: string[], violation: Violation) => {
+    for (const id of ids) flagged.set(id, [...(flagged.get(id) ?? []), violation]);
+  };
+  const limit = settings.maxPausesPerRun;
+
+  if (plan.sessionPct >= settings.sessionPauseAtPct) flag(topBy(candidates, (e) => e.sessionPct, limit), "session");
+  if (plan.weekPct - ctx.weekElapsedPct > settings.weeklyPaceLeadPts) flag(topBy(candidates, (e) => e.weekPct, limit), "weekly-pace");
+  flag(
+    candidates.filter((c) => !c.exempt && !c.paused && c.estimate.weekPct > ctx.fairSharePct).map((c) => c.agentId),
+    "weekly-share",
+  );
+  if (plan.weekPct >= settings.opusRuleMinWeekPct && (plan.opusWeekPct / plan.weekPct) * 100 > settings.maxOpusSharePct) {
+    flag(topBy(candidates, (e) => e.opusWeekPct, limit), "opus-share");
   }
-  if (state.pausedByPlugin && !state.pausedByOther && found.length === 0) return { kind: "resume" };
-  return { kind: "none" };
+
+  const weekPctOfAgent = new Map(candidates.map((c) => [c.agentId, c.estimate.weekPct]));
+  return [...flagged.entries()]
+    .map(([agentId, violations]) => ({ agentId, violations }))
+    .sort((a, b) => (weekPctOfAgent.get(b.agentId) ?? 0) - (weekPctOfAgent.get(a.agentId) ?? 0));
+}
+
+export function windowReset(entry: PausedEntry, now: Date, settings: Pick<Settings, "sessionHours" | "weekResetAnchor">): boolean {
+  const pausedAt = Date.parse(entry.pausedAt);
+  return entry.violations.every((violation) =>
+    violation === "session"
+      ? now.getTime() >= pausedAt + settings.sessionHours * HOUR_MS
+      : weekStart(now, settings).getTime() > pausedAt,
+  );
 }
