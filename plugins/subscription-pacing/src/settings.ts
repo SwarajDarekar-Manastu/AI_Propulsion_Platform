@@ -48,7 +48,7 @@ export const instanceConfigSchema = {
       type: "string",
       enum: ["off", "dry-run", "enforce"],
       default: DEFAULTS.mode,
-      description: "off: do nothing. dry-run: estimate and post the digest, never pause or resume. enforce: pause and resume agents.",
+      description: "off: do nothing, including resuming; agents the plugin paused stay paused until the Board resumes them. dry-run: estimate and post the digest, never pause, but resume agents the plugin paused once their reasons end. enforce: pause and resume agents.",
     },
     companyId: { type: "string", description: "Company whose agents are paced. Unset means the job does nothing." },
     digestIssueId: { type: "string", description: "Board issue that receives the digest comments. Unset means the digest goes to the worker log only." },

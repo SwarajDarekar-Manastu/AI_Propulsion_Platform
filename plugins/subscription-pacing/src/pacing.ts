@@ -16,7 +16,7 @@ export interface AgentReport {
   estimate: Estimate | null;
   cancelledRuns: number;
   decision: Decision;
-  outcome: "paused" | "resumed" | "would-pause" | "would-resume" | "deferred" | "failed" | "none";
+  outcome: "paused" | "resumed" | "would-pause" | "deferred" | "failed" | "none";
 }
 
 export interface PacingResult {
@@ -98,10 +98,6 @@ export async function runPacing(ctx: PluginContext, now: Date): Promise<PacingRe
     .sort((a, b) => (b.estimate?.weekPct ?? 0) - (a.estimate?.weekPct ?? 0));
 
   for (const report of resumes) {
-    if (!enforce) {
-      report.outcome = "would-resume";
-      continue;
-    }
     try {
       await ctx.agents.resume(report.agentId, companyId);
       delete pausedSet[report.agentId];

@@ -183,6 +183,48 @@ describe("pace-agents job", () => {
     expect(await Promise.all(["a1", "a2"].map((id) => statusOf(harness, id)))).toEqual(["idle", "idle"]);
   });
 
+  it("skips exempt agents in plan rules and reads exemptAgentIds from settings", async () => {
+    const agents = [agent("a1", "idle"), agent("a2", "idle")];
+    const rows = agents.map((a) => ({ ...hot, agent_id: a.id }));
+    const harness = await setup({ ...calibrated, mode: "enforce", exemptAgentIds: ["a1"] }, agents, rows);
+    await harness.runJob(JOB_KEY);
+    expect(await Promise.all(agents.map((a) => statusOf(harness, a.id)))).toEqual(["idle", "paused"]);
+  });
+
+  it("splits Opus from other models and parses string token counts", async () => {
+    const rows = [
+      { agent_id: "a1", model: "claude-opus-5-5", week_tokens: "20000000", session_tokens: "20000000" },
+      { agent_id: "a1", model: null, week_tokens: "4000000", session_tokens: "4000000" },
+    ] as unknown as Row[];
+    const harness = await setup({ ...calibrated, mode: "enforce" }, [agent("a1", "idle")], rows);
+    await harness.runJob(JOB_KEY);
+    expect(await statusOf(harness, "a1")).toBe("paused");
+    const body = (await harness.ctx.issues.listComments(DIGEST_ISSUE, COMPANY))[0]?.body ?? "";
+    expect(body).toContain("| Agent a1 | idle | 146.7 | 22.0 | 20.0 | 0 | paused (session) |");
+  });
+
+  it("defers agents over the per-run cap and pauses the heaviest first", async () => {
+    const ids = ["a1", "a2", "a3", "a4", "a5"];
+    const rows = ids.map((id, i) => ({ agent_id: id, model: "claude-sonnet-5-5", week_tokens: (50 + i) * 1_000_000, session_tokens: 0 }));
+    const harness = await setup({ ...calibrated, mode: "enforce", maxPausesPerRun: 2 }, ids.map((id) => agent(id, "idle")), rows);
+    await harness.runJob(JOB_KEY);
+    expect(await Promise.all(ids.map((id) => statusOf(harness, id)))).toEqual(["idle", "idle", "idle", "paused", "paused"]);
+    const body = (await harness.ctx.issues.listComments(DIGEST_ISSUE, COMPANY))[0]?.body ?? "";
+    const outcome = (id: string) => new RegExp(`\\| Agent ${id} \\|[^\\n]*\\| (paused|deferred) \\(`).exec(body)?.[1];
+    expect(ids.map(outcome)).toEqual(["deferred", "deferred", "deferred", "paused", "paused"]);
+  });
+
+  it("still resumes its own pauses in dry-run mode after the window", async () => {
+    const harness = await setup({ ...calibrated, mode: "enforce" }, [agent("a1", "idle")], [hot]);
+    await harness.runJob(JOB_KEY);
+    expect(await statusOf(harness, "a1")).toBe("paused");
+    harness.ctx.db.query = (async () => []) as typeof harness.ctx.db.query;
+    harness.ctx.config.get = (async () => ({ ...calibrated, mode: "dry-run" })) as typeof harness.ctx.config.get;
+    const result = await runPacing(harness.ctx, new Date("2026-10-08T17:00:00Z"));
+    expect(result?.agents.map((r) => r.outcome)).toEqual(["resumed"]);
+    expect(await statusOf(harness, "a1")).toBe("idle");
+  });
+
   it("charges cancelled runs without usage and reports them", async () => {
     const harness = await setup(calibrated, [agent("a1", "idle")], [], [{ agent_id: "a1", week_runs: 4, session_runs: 4 }]);
     await harness.runJob(JOB_KEY);
