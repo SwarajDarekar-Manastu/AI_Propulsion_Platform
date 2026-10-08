@@ -102,7 +102,16 @@ function topBy(candidates: Candidate[], measure: (e: Estimate) => number, limit:
     .map((c) => c.agentId);
 }
 
-export function choosePauses(candidates: Candidate[], ctx: PacingContext, settings: Settings): PauseOrder[] {
+export function paceBreached(plan: Estimate, ctx: Pick<PacingContext, "weekElapsedPct">, settings: Pick<Settings, "weeklyPaceLeadPts">): boolean {
+  return plan.weekPct - ctx.weekElapsedPct > settings.weeklyPaceLeadPts;
+}
+
+export function opusShareBreached(plan: Estimate, settings: Pick<Settings, "maxOpusSharePct" | "opusRuleMinWeekPct">): boolean {
+  if (settings.maxOpusSharePct === null || plan.weekPct < settings.opusRuleMinWeekPct || plan.weekPct <= 0) return false;
+  return (plan.opusWeekPct / plan.weekPct) * 100 > settings.maxOpusSharePct;
+}
+
+export function choosePauses(candidates: Candidate[], ctx: PacingContext, settings: Settings, held: ReadonlySet<Violation> = new Set()): PauseOrder[] {
   const plan = planEstimate(candidates.map((c) => c.estimate));
   const flagged = new Map<string, Violation[]>();
   const flag = (ids: string[], violation: Violation) => {
@@ -110,15 +119,13 @@ export function choosePauses(candidates: Candidate[], ctx: PacingContext, settin
   };
   const limit = settings.maxPausesPerRun;
 
-  if (plan.sessionPct >= settings.sessionPauseAtPct) flag(topBy(candidates, (e) => e.sessionPct, limit), "session");
-  if (plan.weekPct - ctx.weekElapsedPct > settings.weeklyPaceLeadPts) flag(topBy(candidates, (e) => e.weekPct, limit), "weekly-pace");
+  if (!held.has("session") && plan.sessionPct >= settings.sessionPauseAtPct) flag(topBy(candidates, (e) => e.sessionPct, limit), "session");
+  if (!held.has("weekly-pace") && paceBreached(plan, ctx, settings)) flag(topBy(candidates, (e) => e.weekPct, limit), "weekly-pace");
   flag(
     candidates.filter((c) => !c.exempt && !c.paused && c.estimate.weekPct > ctx.fairSharePct).map((c) => c.agentId),
     "weekly-share",
   );
-  if (plan.weekPct >= settings.opusRuleMinWeekPct && (plan.opusWeekPct / plan.weekPct) * 100 > settings.maxOpusSharePct) {
-    flag(topBy(candidates, (e) => e.opusWeekPct, limit), "opus-share");
-  }
+  if (!held.has("opus-share") && opusShareBreached(plan, settings)) flag(topBy(candidates, (e) => e.opusWeekPct, limit), "opus-share");
 
   const weekPctOfAgent = new Map(candidates.map((c) => [c.agentId, c.estimate.weekPct]));
   return [...flagged.entries()]
@@ -126,11 +133,23 @@ export function choosePauses(candidates: Candidate[], ctx: PacingContext, settin
     .sort((a, b) => (weekPctOfAgent.get(b.agentId) ?? 0) - (weekPctOfAgent.get(a.agentId) ?? 0));
 }
 
-export function windowReset(entry: PausedEntry, now: Date, settings: Pick<Settings, "sessionHours" | "weekResetAnchor">): boolean {
+export interface PlanState {
+  plan: Estimate;
+  weekElapsedPct: number;
+}
+
+export function windowReset(entry: PausedEntry, now: Date, settings: Settings, state: PlanState): boolean {
   const pausedAt = Date.parse(entry.pausedAt);
-  return entry.violations.every((violation) =>
-    violation === "session"
-      ? now.getTime() >= pausedAt + settings.sessionHours * HOUR_MS
-      : weekStart(now, settings).getTime() > pausedAt,
-  );
+  return entry.violations.every((violation) => {
+    switch (violation) {
+      case "session":
+        return now.getTime() >= pausedAt + settings.sessionHours * HOUR_MS;
+      case "weekly-share":
+        return weekStart(now, settings).getTime() > pausedAt;
+      case "weekly-pace":
+        return !paceBreached(state.plan, state, settings);
+      case "opus-share":
+        return !opusShareBreached(state.plan, settings);
+    }
+  });
 }

@@ -11,7 +11,7 @@ export interface Settings {
   sessionPauseAtPct: number;
   weeklyPaceLeadPts: number;
   agentWeeklySharePct: number | null;
-  maxOpusSharePct: number;
+  maxOpusSharePct: number | null;
   opusRuleMinWeekPct: number;
   cancelledRunAllowanceTokens: number;
   maxPausesPerRun: number;
@@ -31,7 +31,7 @@ export const DEFAULTS: Settings = {
   sessionPauseAtPct: 80,
   weeklyPaceLeadPts: 10,
   agentWeeklySharePct: null,
-  maxOpusSharePct: 60,
+  maxOpusSharePct: null,
   opusRuleMinWeekPct: 5,
   cancelledRunAllowanceTokens: 100_000,
   maxPausesPerRun: 2,
@@ -59,8 +59,8 @@ export const instanceConfigSchema = {
     sessionPauseAtPct: { type: "number", exclusiveMinimum: 0, default: DEFAULTS.sessionPauseAtPct, description: "Pause an agent when its session estimate reaches this percent." },
     weeklyPaceLeadPts: { type: "number", minimum: 0, default: DEFAULTS.weeklyPaceLeadPts, description: "Pause an agent when its weekly estimate exceeds the week's elapsed share by more than this many points." },
     agentWeeklySharePct: { type: "number", exclusiveMinimum: 0, maximum: 100, description: "Weekly share each agent may use. Unset means 100 divided by the number of agents." },
-    maxOpusSharePct: { type: "number", exclusiveMinimum: 0, maximum: 100, default: DEFAULTS.maxOpusSharePct, description: "Pause an agent when Opus is more than this percent of its weekly estimate." },
-    opusRuleMinWeekPct: { type: "number", minimum: 0, default: DEFAULTS.opusRuleMinWeekPct, description: "The Opus rule applies only to agents whose weekly estimate is at least this percent." },
+    maxOpusSharePct: { type: "number", exclusiveMinimum: 0, maximum: 100, description: "Pause the heaviest Opus users when Opus is more than this percent of the plan's weekly estimate. Unset turns the Opus rule off." },
+    opusRuleMinWeekPct: { type: "number", minimum: 0, default: DEFAULTS.opusRuleMinWeekPct, description: "The Opus rule applies only once the plan's weekly estimate is at least this percent." },
     cancelledRunAllowanceTokens: { type: "number", minimum: 0, default: DEFAULTS.cancelledRunAllowanceTokens, description: "Tokens charged at the Sonnet ratio for each cancelled run that has no usage record." },
     maxPausesPerRun: { type: "integer", minimum: 0, default: DEFAULTS.maxPausesPerRun, description: "Most agents the job pauses in one run. Further violators wait for the next run and show in the digest." },
     exemptAgentIds: { type: "array", items: { type: "string" }, description: "Agents the plugin never pauses." },
@@ -96,7 +96,7 @@ export function resolveSettings(raw: Record<string, unknown> | null | undefined)
     sessionPauseAtPct: positive(r.sessionPauseAtPct) ?? DEFAULTS.sessionPauseAtPct,
     weeklyPaceLeadPts: nonNegative(r.weeklyPaceLeadPts) ?? DEFAULTS.weeklyPaceLeadPts,
     agentWeeklySharePct: positive(r.agentWeeklySharePct),
-    maxOpusSharePct: positive(r.maxOpusSharePct) ?? DEFAULTS.maxOpusSharePct,
+    maxOpusSharePct: positive(r.maxOpusSharePct),
     opusRuleMinWeekPct: nonNegative(r.opusRuleMinWeekPct) ?? DEFAULTS.opusRuleMinWeekPct,
     cancelledRunAllowanceTokens: nonNegative(r.cancelledRunAllowanceTokens) ?? DEFAULTS.cancelledRunAllowanceTokens,
     maxPausesPerRun: typeof r.maxPausesPerRun === "number" && Number.isInteger(r.maxPausesPerRun) && r.maxPausesPerRun >= 0 ? r.maxPausesPerRun : DEFAULTS.maxPausesPerRun,

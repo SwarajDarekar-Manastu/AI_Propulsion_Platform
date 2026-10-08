@@ -28,8 +28,8 @@ Set these in the plugin settings. Only `companyId` and the two ratios are requir
 | `sessionPauseAtPct` | 80 | Rule 1 threshold. |
 | `weeklyPaceLeadPts` | 10 | Rule 2 threshold. |
 | `agentWeeklySharePct` | 100 / agent count | Rule 3 threshold. |
-| `maxOpusSharePct` | 60 | Rule 4 threshold. |
-| `opusRuleMinWeekPct` | 5 | Rule 4 applies only above this weekly estimate. |
+| `maxOpusSharePct` | unset | Rule 4 threshold on the plan's Opus share. Unset turns rule 4 off. Six of the 12 seats run on Opus, so pick a limit above the department's normal mix, using the plan totals line in the digest. |
+| `opusRuleMinWeekPct` | 5 | Rule 4 applies only once the plan's weekly estimate is at least this percent. |
 | `cancelledRunAllowanceTokens` | 100000 | See the usage gap below. |
 | `maxPausesPerRun` | 2 | Cap on pauses in one run. |
 | `exemptAgentIds` | none | Agents never paused. |
@@ -49,11 +49,11 @@ Rules 1, 2 and 4 measure the whole plan: the job sums the estimate over every ag
 3. An agent's weekly estimate is above its weekly share.
 4. Opus is more than `maxOpusSharePct` of the plan's weekly estimate (applies once the plan estimate is at least `opusRuleMinWeekPct`).
 
-Tokens of paused agents still count toward the plan, so a plan rule that stays over its limit pauses up to `maxPausesPerRun` more agents on each run until the window ages out. Put reviewers and other agents you never want paused in `exemptAgentIds`. The Network and Observability Engineer must be there (`model-roles.md`: never paused by pacing).
+Tokens of paused agents still count toward the plan, so a plan rule stays fired after the pauses. While the plugin holds an agent paused for a plan rule (session, pace or Opus), that rule orders no new pauses. One breach pauses one batch of at most `maxPausesPerRun` agents. Rule 3 is per agent and is unaffected. Put reviewers and other agents you never want paused in `exemptAgentIds`. The Network and Observability Engineer must be there (`model-roles.md`: never paused by pacing).
 
 ## Resume
 
-The plugin resumes an agent only when it paused that agent and the windows of the rules that paused it have reset. A session pause ends `sessionHours` after the pause. A weekly, pace or Opus pause ends when the next plan week starts. A pause is the plugin's own only while the agent is paused with the same `pausedAt` that `agents.pause` returned. If the Board resumes and pauses the agent again, `pausedAt` changes and the plugin lets go of it.
+The plugin resumes an agent only when it paused that agent and the windows of the rules that paused it have reset. A session pause ends `sessionHours` after the pause. A rule 3 pause ends when the next plan week starts. A pace pause ends when the plan's lead is back at or under `weeklyPaceLeadPts`. An Opus pause ends when the plan's Opus share is at or under `maxOpusSharePct`, the plan's weekly estimate is under `opusRuleMinWeekPct`, or the limit is unset. A pause with several reasons ends when every reason has ended. A pause is the plugin's own only while the agent is paused with the same `pausedAt` that `agents.pause` returned. If the Board resumes and pauses the agent again, `pausedAt` changes and the plugin lets go of it.
 
 ## Safety
 

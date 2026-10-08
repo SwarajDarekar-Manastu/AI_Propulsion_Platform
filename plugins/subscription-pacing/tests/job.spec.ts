@@ -147,6 +147,19 @@ describe("pace-agents job", () => {
     expect(await statusOf(harness, "a1")).toBe("paused");
   });
 
+  it("pauses one batch per pace breach and resumes it when the plan is back on pace", async () => {
+    const ids = Array.from({ length: 12 }, (_, i) => `a${i + 1}`);
+    const rows = ids.map((id, i) => ({ agent_id: id, model: "claude-sonnet-5-5", week_tokens: (12 - i) * 1_000_000, session_tokens: 0 }));
+    const harness = await setup({ ...calibrated, mode: "enforce" }, ids.map((id) => agent(id, "idle")), rows);
+    for (const at of ["06:00", "06:15", "06:30", "06:45"]) await runPacing(harness.ctx, new Date(`2026-10-05T${at}:00Z`));
+    const statuses = await Promise.all(ids.map((id) => statusOf(harness, id)));
+    expect(ids.filter((_, i) => statuses[i] === "paused")).toEqual(["a1", "a2"]);
+
+    harness.ctx.db.query = (async () => []) as typeof harness.ctx.db.query;
+    await runPacing(harness.ctx, new Date("2026-10-05T07:00:00Z"));
+    expect(await Promise.all(["a1", "a2"].map((id) => statusOf(harness, id)))).toEqual(["idle", "idle"]);
+  });
+
   it("charges cancelled runs without usage and reports them", async () => {
     const harness = await setup(calibrated, [agent("a1", "idle")], [], [{ agent_id: "a1", week_runs: 4, session_runs: 4 }]);
     await harness.runJob(JOB_KEY);
@@ -161,6 +174,7 @@ describe("pace-agents job", () => {
       now: NOW,
       weekElapsedPct: 0,
       fairSharePct: 100,
+      plan: { sessionPct: 0, weekPct: 0, opusWeekPct: 0 },
       agents: [],
       released: [],
     });

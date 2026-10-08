@@ -1,5 +1,5 @@
 import type { PluginContext } from "@paperclipai/plugin-sdk";
-import { choosePauses, emptyUsage, estimate, fairSharePct, weekElapsedPct, weekStart, windowReset, type Decision, type Estimate, type PausedEntry } from "./rules.js";
+import { choosePauses, emptyUsage, estimate, fairSharePct, planEstimate, weekElapsedPct, weekStart, windowReset, type Decision, type Estimate, type PausedEntry } from "./rules.js";
 import { resolveSettings, type Settings } from "./settings.js";
 import { loadUsage } from "./usage.js";
 
@@ -24,6 +24,7 @@ export interface PacingResult {
   now: Date;
   weekElapsedPct: number;
   fairSharePct: number;
+  plan: Estimate;
   agents: AgentReport[];
   released: string[];
 }
@@ -64,13 +65,15 @@ export async function runPacing(ctx: PluginContext, now: Date): Promise<PacingRe
     const est = estimates.get(a.id) ?? null;
     return est === null ? [] : [{ agentId: a.id, estimate: est, exempt: exempt.has(a.id), paused: a.status === "paused" }];
   });
-  const pauseOrders = new Map(choosePauses(candidates, ctxPacing, settings).map((o) => [o.agentId, o.violations]));
+  const plan = planEstimate(candidates.map((c) => c.estimate));
+  const held = new Set(Object.values(pausedSet).flatMap((e) => e.violations));
+  const pauseOrders = new Map(choosePauses(candidates, ctxPacing, settings, held).map((o) => [o.agentId, o.violations]));
 
   const reports: AgentReport[] = agents.map((agent) => {
     const entry = pausedSet[agent.id];
     const violations = pauseOrders.get(agent.id);
     let decision: Decision = { kind: "none" };
-    if (entry && windowReset(entry, now, settings)) decision = { kind: "resume" };
+    if (entry && windowReset(entry, now, settings, { plan, weekElapsedPct: elapsed })) decision = { kind: "resume" };
     else if (!entry && agent.status !== "paused" && violations) decision = { kind: "pause", violations };
     return {
       agentId: agent.id,
@@ -132,7 +135,7 @@ export async function runPacing(ctx: PluginContext, now: Date): Promise<PacingRe
   }
 
   await ctx.state.set(PAUSED_KEY, pausedSet);
-  return { settings, now, weekElapsedPct: elapsed, fairSharePct: ctxPacing.fairSharePct, agents: reports, released };
+  return { settings, now, weekElapsedPct: elapsed, fairSharePct: ctxPacing.fairSharePct, plan, agents: reports, released };
 }
 
 function fmt(n: number): string {
@@ -146,6 +149,8 @@ export function formatDigest(result: PacingResult): string {
     ``,
     `Mode: \`${settings.mode}\`. Week elapsed: ${fmt(result.weekElapsedPct)}%. Fair share per agent: ${fmt(result.fairSharePct)}%.`,
   ];
+  const opusShare = result.plan.weekPct > 0 ? (result.plan.opusWeekPct / result.plan.weekPct) * 100 : 0;
+  lines.push(``, `Plan totals: session ${fmt(result.plan.sessionPct)}%, week ${fmt(result.plan.weekPct)}%, Opus share ${fmt(opusShare)}%.${settings.maxOpusSharePct === null ? " The Opus rule is off until maxOpusSharePct is set." : ""}`);
   if (settings.opusPctPerMillion === null || settings.sonnetPctPerMillion === null) {
     lines.push(``, `**Estimates are off.** Set \`opusPctPerMillion\` and \`sonnetPctPerMillion\` in the plugin settings. No agent is paused until both are set.`);
   }

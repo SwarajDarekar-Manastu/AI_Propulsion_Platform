@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { choosePauses, estimate, fairSharePct, weekElapsedPct, weekStart, windowReset, type AgentUsage, type Candidate, type PacingContext, type PausedEntry } from "../src/rules.js";
+import { choosePauses, estimate, fairSharePct, planEstimate, weekElapsedPct, weekStart, windowReset, type AgentUsage, type Candidate, type PacingContext, type PlanState, type Violation, type PausedEntry } from "../src/rules.js";
 import { resolveSettings } from "../src/settings.js";
 
 const settings = resolveSettings({ opusPctPerMillion: 1, sonnetPctPerMillion: 0.5 });
@@ -36,8 +36,8 @@ function candidate(spec: Spec): Candidate {
   return { agentId: spec.id, estimate: est, exempt: spec.exempt ?? false, paused: spec.paused ?? false };
 }
 
-function pauses(specs: Spec[], ctx: PacingContext, overrides: Record<string, unknown> = {}) {
-  return choosePauses(specs.map(candidate), ctx, resolveSettings({ opusPctPerMillion: 1, sonnetPctPerMillion: 0.5, ...overrides }));
+function pauses(specs: Spec[], ctx: PacingContext, overrides: Record<string, unknown> = {}, held: Violation[] = []) {
+  return choosePauses(specs.map(candidate), ctx, resolveSettings({ opusPctPerMillion: 1, sonnetPctPerMillion: 0.5, ...overrides }), new Set(held));
 }
 
 describe("rule 1: plan session estimate reaches 80%", () => {
@@ -85,6 +85,8 @@ describe("rule 3: an agent is above its weekly share", () => {
 });
 
 describe("rule 4: plan Opus share is above the limit", () => {
+  const limit = { maxOpusSharePct: 60 };
+
   it("pauses the agents using the most Opus, highest first, up to the cap", () => {
     expect(
       pauses(
@@ -94,6 +96,7 @@ describe("rule 4: plan Opus share is above the limit", () => {
           { id: "a3", week: { sonnet: 4_000_000 } },
         ],
         lateWeek,
+        limit,
       ),
     ).toEqual([
       { agentId: "a1", violations: ["opus-share"] },
@@ -101,12 +104,40 @@ describe("rule 4: plan Opus share is above the limit", () => {
     ]);
   });
 
-  it("does not pause an Opus-only agent while the plan Opus share is at or under 60%", () => {
-    expect(pauses([{ id: "ceo", week: { opus: 6_000_000 } }, { id: "dev", week: { sonnet: 8_000_000 } }], lateWeek)).toEqual([]);
+  it("does not pause an Opus-only agent while the plan Opus share is at or under the limit", () => {
+    expect(pauses([{ id: "ceo", week: { opus: 6_000_000 } }, { id: "dev", week: { sonnet: 8_000_000 } }], lateWeek, limit)).toEqual([]);
   });
 
   it("ignores the Opus share while the plan estimate is under the minimum", () => {
-    expect(pauses([{ id: "a1", week: { opus: 3_000_000 } }], lateWeek)).toEqual([]);
+    expect(pauses([{ id: "a1", week: { opus: 3_000_000 } }], lateWeek, limit)).toEqual([]);
+  });
+
+  it("is off when maxOpusSharePct is unset, even for a plan made entirely of Opus", () => {
+    expect(pauses([{ id: "ceo", week: { opus: 6_000_000 } }, { id: "cto", week: { opus: 6_000_000 } }], lateWeek)).toEqual([]);
+  });
+});
+
+describe("a plan rule the plugin still holds orders no new pauses", () => {
+  const sonnet = (m: number) => ({ week: { sonnet: m * 1_000_000 } });
+  const crowd = [{ id: "a1", ...sonnet(30) }, { id: "a2", ...sonnet(20) }, { id: "a3", ...sonnet(10) }];
+
+  it("pace", () => {
+    expect(pauses(crowd, earlyWeek, {}, ["weekly-pace"])).toEqual([]);
+  });
+
+  it("session", () => {
+    const hotSession = [{ id: "a1", session: { sonnet: 24_000_000 }, week: { sonnet: 24_000_000 } }];
+    expect(pauses(hotSession, halfWeek, {}, ["session"])).toEqual([]);
+  });
+
+  it("opus share", () => {
+    expect(pauses([{ id: "a1", week: { opus: 6_000_000 } }], lateWeek, { maxOpusSharePct: 60 }, ["opus-share"])).toEqual([]);
+  });
+
+  it("still pauses for rule 3", () => {
+    expect(pauses([{ id: "a1", week: { sonnet: 42_000_000 } }], halfWeek, {}, ["weekly-pace"])).toEqual([
+      { agentId: "a1", violations: ["weekly-share"] },
+    ]);
   });
 });
 
@@ -140,28 +171,50 @@ describe("estimates", () => {
 
 describe("resume rule", () => {
   const paused = (violations: PausedEntry["violations"], pausedAt: string): PausedEntry => ({ pausedAt, violations });
+  const opusSettings = resolveSettings({ opusPctPerMillion: 1, sonnetPctPerMillion: 0.5, maxOpusSharePct: 60 });
+  const planOf = (specs: Spec[]) => planEstimate(specs.map((s) => candidate(s).estimate));
+  const calm: PlanState = { plan: { sessionPct: 0, weekPct: 0, opusWeekPct: 0 }, weekElapsedPct: 50 };
 
   it("ends a session pause exactly sessionHours after it began", () => {
     const entry = paused(["session"], "2026-10-08T07:00:00.000Z");
-    expect(windowReset(entry, new Date("2026-10-08T11:59:59.999Z"), settings)).toBe(false);
-    expect(windowReset(entry, new Date("2026-10-08T12:00:00.000Z"), settings)).toBe(true);
+    expect(windowReset(entry, new Date("2026-10-08T11:59:59.999Z"), settings, calm)).toBe(false);
+    expect(windowReset(entry, new Date("2026-10-08T12:00:00.000Z"), settings, calm)).toBe(true);
   });
 
-  it("ends a weekly pause when the next week starts", () => {
+  it("ends a weekly-share pause when the next week starts", () => {
     const entry = paused(["weekly-share"], "2026-10-07T12:00:00.000Z");
-    expect(windowReset(entry, new Date("2026-10-11T23:59:59.999Z"), settings)).toBe(false);
-    expect(windowReset(entry, new Date("2026-10-12T00:00:00.000Z"), settings)).toBe(true);
+    expect(windowReset(entry, new Date("2026-10-11T23:59:59.999Z"), settings, calm)).toBe(false);
+    expect(windowReset(entry, new Date("2026-10-12T00:00:00.000Z"), settings, calm)).toBe(true);
   });
 
-  it("treats the pace and Opus rules as weekly", () => {
-    expect(windowReset(paused(["weekly-pace"], "2026-10-07T12:00:00.000Z"), new Date("2026-10-11T12:00:00.000Z"), settings)).toBe(false);
-    expect(windowReset(paused(["opus-share"], "2026-10-07T12:00:00.000Z"), new Date("2026-10-12T00:00:00.000Z"), settings)).toBe(true);
+  it("ends a pace pause when the plan lead is at or under the limit", () => {
+    const entry = paused(["weekly-pace"], "2026-10-06T06:00:00.000Z");
+    const at = (weekPct: number): PlanState => ({ plan: { sessionPct: 0, weekPct, opusWeekPct: 0 }, weekElapsedPct: 10 });
+    const now = new Date("2026-10-06T07:00:00.000Z");
+    expect(windowReset(entry, now, settings, at(20.1))).toBe(false);
+    expect(windowReset(entry, now, settings, at(20))).toBe(true);
+  });
+
+  it("ends an Opus pause when the plan Opus share is at or under the limit, or the plan week is under the minimum", () => {
+    const entry = paused(["opus-share"], "2026-10-06T09:00:00.000Z");
+    const now = new Date("2026-10-06T10:00:00.000Z");
+    const over = planOf([{ id: "a", week: { opus: 6_000_000 } }, { id: "b", week: { sonnet: 7_000_000 } }]);
+    const atLimit = planOf([{ id: "a", week: { opus: 6_000_000 } }, { id: "b", week: { sonnet: 8_000_000 } }]);
+    const tiny = planOf([{ id: "a", week: { opus: 4_000_000 } }]);
+    expect(windowReset(entry, now, opusSettings, { plan: over, weekElapsedPct: 50 })).toBe(false);
+    expect(windowReset(entry, now, opusSettings, { plan: atLimit, weekElapsedPct: 50 })).toBe(true);
+    expect(windowReset(entry, now, opusSettings, { plan: tiny, weekElapsedPct: 50 })).toBe(true);
+  });
+
+  it("ends an Opus pause when the limit has been unset", () => {
+    const over = planOf([{ id: "a", week: { opus: 6_000_000 } }]);
+    expect(windowReset(paused(["opus-share"], "2026-10-06T09:00:00.000Z"), new Date("2026-10-06T10:00:00.000Z"), settings, { plan: over, weekElapsedPct: 50 })).toBe(true);
   });
 
   it("waits for every recorded window", () => {
     const entry = paused(["session", "weekly-share"], "2026-10-07T12:00:00.000Z");
-    expect(windowReset(entry, new Date("2026-10-11T12:00:00.000Z"), settings)).toBe(false);
-    expect(windowReset(entry, new Date("2026-10-12T00:00:00.000Z"), settings)).toBe(true);
+    expect(windowReset(entry, new Date("2026-10-11T12:00:00.000Z"), settings, calm)).toBe(false);
+    expect(windowReset(entry, new Date("2026-10-12T00:00:00.000Z"), settings, calm)).toBe(true);
   });
 });
 
