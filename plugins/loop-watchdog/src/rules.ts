@@ -6,8 +6,6 @@ export interface WakeEntry {
   at: string;
 }
 
-export type WakeLog = Record<string, WakeEntry[]>;
-
 export function pruneWakes(entries: WakeEntry[], now: Date): WakeEntry[] {
   const cutoff = now.getTime() - WAKE_WINDOW_MS;
   return entries.filter((entry) => Date.parse(entry.at) > cutoff);

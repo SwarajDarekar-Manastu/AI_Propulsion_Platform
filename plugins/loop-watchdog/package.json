@@ -6,7 +6,7 @@
   "description": "Pauses agents that loop: too many wakes on one task, or token use far above their own norm",
   "scripts": {
     "build": "node ./esbuild.config.mjs",
-    "test": "vitest run --config ./vitest.config.ts",
+    "test": "vitest run --config ./vitest.config.ts --maxWorkers=2",
     "typecheck": "tsc --noEmit",
     "lint": "eslint ."
   },

@@ -32,7 +32,7 @@ The worker applies these defaults itself. It does not rely on the SDK to apply s
 
 Both rules run on the event that ends or starts a run. Each pauses at most one agent per decision.
 
-**Rule W, wakes on one task.** Each `agent.run.started` event with a task adds one wake for that agent and task. The rule fires when an agent has more than `maxWakesPerTask` wakes on one task in the last 60 minutes. The window is fixed at 60 minutes.
+**Rule W, wakes on one task.** Each `agent.run.started` event with a task adds one wake for that agent and task. The rule fires when an agent has more than `maxWakesPerTask` wakes on one task in the last 60 minutes. The window is fixed at 60 minutes. Each agent's wakes live in its own state, under the `agent` scope. When Rule W reaches a decision, the agent's wakes for that task are cleared, so the count starts again from zero.
 
 **Rule T, tokens against the agent's own median.** On `agent.run.finished` or `agent.run.failed`, the plugin reads the run's tokens, which are `inputTokens + cachedInputTokens + outputTokens` from `heartbeat_runs.usage_json`. It takes the median of the agent's last `tokenHistoryRuns` other runs with usage. The rule fires when the run's tokens are more than `tokenMultiple` times that median. It does not fire when the agent has fewer than `minBaselineRuns` runs with usage.
 
@@ -57,7 +57,9 @@ Every decision posts one comment to `digestIssueId` with the agent, the rule, th
 
 **Company context.** Every host call passes the event's `companyId`: `ctx.config.get`, `ctx.agents.get`, `ctx.agents.pause`, `ctx.issues.createComment`, and the database queries.
 
-**Duplicate deliveries.** A redelivered `agent.run.started` with a run ID already in the wake log counts once.
+**Clearing after a decision.** Clearing the wakes after a decision makes a Board resume hold. A loop that continues after a resume is paused again only after another `maxWakesPerTask + 1` starts. In `dry-run`, a loop of any length posts one digest per `maxWakesPerTask + 1` starts, not one per start.
+
+**Duplicate deliveries.** A redelivered `agent.run.started` with a run ID already in the agent's wake state counts once.
 
 ## Capabilities
 

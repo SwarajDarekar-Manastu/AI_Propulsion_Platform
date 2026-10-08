@@ -1,9 +1,11 @@
 import type { PluginContext, PluginEvent } from "@paperclipai/plugin-sdk";
-import { countWakes, pruneWakes, tokenBreach, tokensOf, type TokenBreach, type WakeEntry, type WakeLog } from "./rules.js";
+import { countWakes, pruneWakes, tokenBreach, tokensOf, type TokenBreach, type WakeEntry } from "./rules.js";
 import { resolveSettings, type Settings } from "./settings.js";
 import { loadBaselineUsage, loadRunUsage } from "./usage.js";
 
-const WAKE_LOG_KEY = { scopeKind: "instance", stateKey: "wake-log" } as const;
+function wakesKey(agentId: string) {
+  return { scopeKind: "agent", scopeId: agentId, stateKey: "wakes" } as const;
+}
 
 interface RunRef {
   runId: string;
@@ -39,23 +41,9 @@ function isWakeEntry(value: unknown): value is WakeEntry {
   );
 }
 
-function parseWakeLog(value: unknown): WakeLog {
-  if (typeof value !== "object" || value === null) return {};
-  const log: WakeLog = {};
-  for (const [agentId, entries] of Object.entries(value)) {
-    if (Array.isArray(entries)) log[agentId] = entries.filter(isWakeEntry);
-  }
-  return log;
-}
-
-async function readWakeLog(ctx: PluginContext, now: Date): Promise<WakeLog> {
-  const log = parseWakeLog(await ctx.state.get(WAKE_LOG_KEY));
-  const pruned: WakeLog = {};
-  for (const [agentId, entries] of Object.entries(log)) {
-    const kept = pruneWakes(entries, now);
-    if (kept.length > 0) pruned[agentId] = kept;
-  }
-  return pruned;
+async function readWakes(ctx: PluginContext, agentId: string, now: Date): Promise<WakeEntry[]> {
+  const value = await ctx.state.get(wakesKey(agentId));
+  return Array.isArray(value) ? pruneWakes(value.filter(isWakeEntry), now) : [];
 }
 
 function describe(breach: Breach): string {
@@ -103,7 +91,7 @@ async function act(
   const body = [
     `## Loop watchdog: ${outcome}`,
     ``,
-    `Agent \`${target.agentId}\`. Task \`${task}\`. ${describe(target.breach)}.`,
+    `Agent ${agent.name} (\`${target.agentId}\`). Task \`${task}\`. ${describe(target.breach)}.`,
     ``,
     `The plugin never resumes an agent. The Board resumes it.`,
   ].join("\n");
@@ -117,16 +105,20 @@ export async function onRunStarted(ctx: PluginContext, event: PluginEvent): Prom
   if (run === null || run.issueId === null) return;
 
   const now = new Date(event.occurredAt);
-  const log = await readWakeLog(ctx, now);
-  const own = log[run.agentId] ?? [];
+  const own = await readWakes(ctx, run.agentId, now);
   if (own.some((entry) => entry.runId === run.runId)) return;
 
   const entry: WakeEntry = { runId: run.runId, issueId: run.issueId, at: now.toISOString() };
-  log[run.agentId] = [...own, entry];
-  await ctx.state.set(WAKE_LOG_KEY, log);
-
-  const count = countWakes(log[run.agentId] ?? [], run.issueId, now);
-  if (count <= settings.maxWakesPerTask) return;
+  const wakes = [...own, entry];
+  const count = countWakes(wakes, run.issueId, now);
+  if (count <= settings.maxWakesPerTask) {
+    await ctx.state.set(wakesKey(run.agentId), wakes);
+    return;
+  }
+  await ctx.state.set(
+    wakesKey(run.agentId),
+    wakes.filter((existing) => existing.issueId !== run.issueId),
+  );
   await act(ctx, event.companyId, settings, {
     agentId: run.agentId,
     issueId: run.issueId,

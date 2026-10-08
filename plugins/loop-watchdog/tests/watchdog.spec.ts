@@ -102,6 +102,31 @@ describe("Rule W: wakes on one task", () => {
     expect(await statusOf(h, "a1")).toBe("idle");
   });
 
+  it("posts one dry-run digest for a 20-start loop, not one per start", async () => {
+    const h = await setup(dryRun, [agent("a1")]);
+    for (let i = 0; i < 20; i += 1) await start(h, `r${i}`, "a1", TASK, 0);
+    expect(await digests(h)).toHaveLength(1);
+  });
+
+  it("does not pause again on the next start after the Board resumes", async () => {
+    const h = await setup(enforce, [agent("a1")]);
+    for (let i = 0; i < 13; i += 1) await start(h, `r${i}`, "a1", TASK, 0);
+    expect(await statusOf(h, "a1")).toBe("paused");
+    h.seed({ agents: [agent("a1")] });
+    await start(h, "after-resume", "a1", TASK, 10);
+    expect(await statusOf(h, "a1")).toBe("idle");
+  });
+
+  it("pauses again only after 13 more starts following a Board resume", async () => {
+    const h = await setup(enforce, [agent("a1")]);
+    for (let i = 0; i < 13; i += 1) await start(h, `r${i}`, "a1", TASK, 0);
+    h.seed({ agents: [agent("a1")] });
+    for (let i = 0; i < 12; i += 1) await start(h, `after-${i}`, "a1", TASK, 10);
+    expect(await statusOf(h, "a1")).toBe("idle");
+    await start(h, "after-12", "a1", TASK, 10);
+    expect(await statusOf(h, "a1")).toBe("paused");
+  });
+
   it("does not count runs with no task", async () => {
     const h = await setup(enforce, [agent("a1")]);
     for (let i = 0; i < 13; i += 1) await start(h, `r${i}`, "a1", null, 0);
