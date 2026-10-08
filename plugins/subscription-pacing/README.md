@@ -80,7 +80,9 @@ A run that is cancelled (for example `issue_reassigned`) has no `usage_json` and
 
 `agents.read`, `agents.pause`, `agents.resume`, `companies.read`, `jobs.schedule`, `issue.comments.create`, `plugin.state.read`, `plugin.state.write`, `database.namespace.read`, `database.namespace.migrate`.
 
-`companies.read` is new in 0.2.0. It lets the job list companies to find the ones with stored settings. The Board re-approves capabilities on upgrade, so this one needs approval.
+`companies.read` is new in 0.2.0. It lets the job list companies to find the ones with stored settings, and the Board approves it at install.
+
+To move an installed 0.1.0 to 0.2.0, do not use Upgrade. On this host it stops the worker and fails on the new capability, and the plugin is left `ready` with no worker running. Soft-uninstall the plugin with `DELETE /plugins/:id`, without `?purge=true` (purge deletes the stored settings). Then install from the plugin directory again and approve `companies.read`. The plugin row and the stored settings are kept.
 
 The database declaration forces the migrate capability and `migrationsDir`. `migrations/` holds only `.gitkeep`. The host rejects a `SELECT 1` migration at install, and its loader reads only `*.sql` files, so the empty directory satisfies `migrationsDir`; the plugin owns no tables. The digest and the worker log record every action.
 
