@@ -16,7 +16,7 @@ To change a model, edit the row here and the matching `model:` or `effort:` line
 | Verification Harness Associate | Paperclip agent | `sonnet` | `medium` | `agents/verification-harness-associate` | Weekly routine. Edits only the verify skill folder. |
 | Developer Experience Associate | Paperclip agent | `opus` | `high` | `agents/developer-experience-associate` | Fortnightly routine. Board approves every skill edit. |
 | Release Manager | Paperclip agent | `sonnet` | `medium` | `agents/release-manager` | The only agent with merge rights. |
-| Network and Observability Engineer | Paperclip agent | `sonnet` | `medium` | `agents/network-and-observability-engineer` | GlitchTip alert and post-deploy routines. Never paused by pacing. |
+| Network and Observability Engineer | Paperclip agent | `sonnet` | `medium` | `agents/network-and-observability-engineer` | GlitchTip alert and post-deploy routines. Mark it Never pause under Paperclip's Costs, Subscription. |
 | Aerospace Domain Engineer | Paperclip agent | `opus` | `high` | `agents/aerospace-domain-engineer` | Gate. On call to the CTO. Timer off. |
 | Adversarial Reviewer | Paperclip agent | ON HOLD | n/a | `on-hold/adversarial-reviewer` | Needs a non-Claude adapter. Do not hire while the department is Claude-only. |
 | judgment and prose | skill seat | `opus` | `high` | the agent itself, or `department-agent` with model `opus` | Prose, PR bodies, judgment calls. |
