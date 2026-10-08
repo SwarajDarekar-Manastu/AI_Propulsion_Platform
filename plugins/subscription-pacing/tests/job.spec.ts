@@ -147,6 +147,29 @@ describe("pace-agents job", () => {
     expect(await statusOf(harness, "a1")).toBe("paused");
   });
 
+  it("checks the weekly pace again after a two-reason pause outlives its pace reason", async () => {
+    const ids = Array.from({ length: 12 }, (_, i) => `a${i + 1}`);
+    const usage = (a1: number, rest: number): Row[] =>
+      ids.map((id, i) => ({ agent_id: id, model: "claude-sonnet-5-5", week_tokens: i === 0 ? a1 : rest, session_tokens: 0 }));
+    const harness = await setup({ ...calibrated, mode: "enforce" }, ids.map((id) => agent(id, "idle")), usage(30_000_000, 1_000_000));
+    const paused = async () => ids.filter((_, i) => statuses[i] === "paused");
+    let statuses: Array<string | undefined> = [];
+    const snapshot = async () => {
+      statuses = await Promise.all(ids.map((id) => statusOf(harness, id)));
+      return paused();
+    };
+
+    await runPacing(harness.ctx, new Date("2026-10-05T06:00:00Z"));
+    expect(await snapshot()).toEqual(["a1", "a2"]);
+
+    await runPacing(harness.ctx, new Date("2026-10-06T00:00:00Z"));
+    expect(await snapshot()).toEqual(["a1"]);
+
+    harness.ctx.db.query = (async (sql: string) => (sql.includes("heartbeat_runs") ? [] : usage(30_000_000, 4_000_000))) as typeof harness.ctx.db.query;
+    await runPacing(harness.ctx, new Date("2026-10-06T12:00:00Z"));
+    expect(await snapshot()).toEqual(["a1", "a2", "a3"]);
+  });
+
   it("pauses one batch per pace breach and resumes it when the plan is back on pace", async () => {
     const ids = Array.from({ length: 12 }, (_, i) => `a${i + 1}`);
     const rows = ids.map((id, i) => ({ agent_id: id, model: "claude-sonnet-5-5", week_tokens: (12 - i) * 1_000_000, session_tokens: 0 }));

@@ -49,7 +49,7 @@ Rules 1, 2 and 4 measure the whole plan: the job sums the estimate over every ag
 3. An agent's weekly estimate is above its weekly share.
 4. Opus is more than `maxOpusSharePct` of the plan's weekly estimate (applies once the plan estimate is at least `opusRuleMinWeekPct`).
 
-Tokens of paused agents still count toward the plan, so a plan rule stays fired after the pauses. While the plugin holds an agent paused for a plan rule (session, pace or Opus), that rule orders no new pauses. One breach pauses one batch of at most `maxPausesPerRun` agents. Rule 3 is per agent and is unaffected. Put reviewers and other agents you never want paused in `exemptAgentIds`. The Network and Observability Engineer must be there (`model-roles.md`: never paused by pacing).
+Tokens of paused agents still count toward the plan, so a plan rule stays fired after the pauses. While the plugin holds an agent paused for a plan rule (session, pace or Opus) and that rule's reason is still in force, that rule orders no new pauses. A reason that has ended is dropped from the stored pause, so a later breach is handled as a new one. One breach pauses one batch of at most `maxPausesPerRun` agents. Rule 3 is per agent and is unaffected. Put reviewers and other agents you never want paused in `exemptAgentIds`. The Network and Observability Engineer must be there (`model-roles.md`: never paused by pacing).
 
 ## Resume
 

@@ -138,18 +138,20 @@ export interface PlanState {
   weekElapsedPct: number;
 }
 
-export function windowReset(entry: PausedEntry, now: Date, settings: Settings, state: PlanState): boolean {
+export function reasonEnded(violation: Violation, entry: PausedEntry, now: Date, settings: Settings, state: PlanState): boolean {
   const pausedAt = Date.parse(entry.pausedAt);
-  return entry.violations.every((violation) => {
-    switch (violation) {
-      case "session":
-        return now.getTime() >= pausedAt + settings.sessionHours * HOUR_MS;
-      case "weekly-share":
-        return weekStart(now, settings).getTime() > pausedAt;
-      case "weekly-pace":
-        return !paceBreached(state.plan, state, settings);
-      case "opus-share":
-        return !opusShareBreached(state.plan, settings);
-    }
-  });
+  switch (violation) {
+    case "session":
+      return now.getTime() >= pausedAt + settings.sessionHours * HOUR_MS;
+    case "weekly-share":
+      return weekStart(now, settings).getTime() > pausedAt;
+    case "weekly-pace":
+      return !paceBreached(state.plan, state, settings);
+    case "opus-share":
+      return !opusShareBreached(state.plan, settings);
+  }
+}
+
+export function windowReset(entry: PausedEntry, now: Date, settings: Settings, state: PlanState): boolean {
+  return entry.violations.every((violation) => reasonEnded(violation, entry, now, settings, state));
 }
