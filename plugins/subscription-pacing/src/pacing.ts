@@ -156,7 +156,7 @@ export function formatDigest(result: PacingResult): string {
     lines.push(``, `**Estimates are off.** Set \`opusPctPerMillion\` and \`sonnetPctPerMillion\` in the plugin settings. No agent is paused until both are set.`);
   }
   if (settings.mode === "dry-run") {
-    lines.push(``, `Dry run. Nothing is paused or resumed. Set \`mode\` to \`enforce\` to act on these decisions.`);
+    lines.push(``, `Dry run. Nothing is paused. The plugin still resumes agents it paused earlier once their reasons end. Set \`mode\` to \`enforce\` to pause.`);
   }
   lines.push(``, `| Agent | Status | Session % | Week % | Opus % | Cancelled runs | Decision |`, `| --- | --- | --- | --- | --- | --- | --- |`);
   for (const r of result.agents) {

@@ -53,7 +53,7 @@ Tokens of paused agents still count toward the plan, so a plan rule stays fired 
 
 ## Resume
 
-The plugin resumes an agent only when it paused that agent and the windows of the rules that paused it have reset. A session pause ends `sessionHours` after the pause. A rule 3 pause ends when the next plan week starts. A pace pause ends when the plan's lead is back at or under `weeklyPaceLeadPts`. An Opus pause ends when the plan's Opus share is at or under `maxOpusSharePct`, the plan's weekly estimate is under `opusRuleMinWeekPct`, or the limit is unset. A pause with several reasons ends when every reason has ended. A pause is the plugin's own only while the agent is paused with the same `pausedAt` that `agents.pause` returned. If the Board resumes and pauses the agent again, `pausedAt` changes and the plugin lets go of it. If the Board resumes an agent that is still over its weekly share, rule 3 pauses it again on the next run. To keep it running, add its ID to `exemptAgentIds`.
+The plugin resumes an agent only when it paused that agent and the windows of the rules that paused it have reset. A session pause ends `sessionHours` after the pause. A rule 3 pause ends when the next plan week starts. A pace pause ends when the plan's lead is back at or under `weeklyPaceLeadPts`. An Opus pause ends when the plan's Opus share is at or under `maxOpusSharePct`, the plan's weekly estimate is under `opusRuleMinWeekPct`, or the limit is unset. While either ratio is unset, pace and Opus pauses stay in force, because the plan estimate is unknown. A pause with several reasons ends when every reason has ended. A pause is the plugin's own only while the agent is paused with the same `pausedAt` that `agents.pause` returned. If the Board resumes and pauses the agent again, `pausedAt` changes and the plugin lets go of it. If the Board resumes an agent that is still over its weekly share, rule 3 pauses it again on the next run. To keep it running, add its ID to `exemptAgentIds`.
 
 ## Safety
 
@@ -68,7 +68,7 @@ The plugin resumes an agent only when it paused that agent and the windows of th
 
 Usage comes from `cost_events` through `ctx.db.query` (`database.namespace.read`). The table carries the model, so Opus and Sonnet are separated. The costs REST API would need `http.outbound` and a token that a worker may not have.
 
-A run that is cancelled (for example `issue_reassigned`) has no `usage_json` and no `cost_events` rows, so its tokens are invisible. The plugin counts `cancelled` runs in `heartbeat_runs` that started (`started_at` is set) and have no usage record and no cost events. Runs cancelled before they started, such as a queue cleared by a pause, are not charged, and charges each `cancelledRunAllowanceTokens` at the Sonnet ratio. The digest reports the count. The allowance is a guess until the Board calibrates it.
+A run that is cancelled (for example `issue_reassigned`) has no `usage_json` and no `cost_events` rows, so its tokens are invisible. The plugin counts `cancelled` runs in `heartbeat_runs` that started (`started_at` is set) and have no usage record and no cost events. Each of those runs is charged `cancelledRunAllowanceTokens` at the Sonnet ratio. Runs cancelled before they started, such as a queue cleared by a pause, are not charged. The digest reports the count. The allowance is a guess until the Board calibrates it.
 
 ## Capabilities
 

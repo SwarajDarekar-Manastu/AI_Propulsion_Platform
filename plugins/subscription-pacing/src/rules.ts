@@ -146,9 +146,9 @@ export function reasonEnded(violation: Violation, entry: PausedEntry, now: Date,
     case "weekly-share":
       return weekStart(now, settings).getTime() > pausedAt;
     case "weekly-pace":
-      return !paceBreached(state.plan, state, settings);
+      return settings.opusPctPerMillion !== null && settings.sonnetPctPerMillion !== null && !paceBreached(state.plan, state, settings);
     case "opus-share":
-      return !opusShareBreached(state.plan, settings);
+      return settings.opusPctPerMillion !== null && settings.sonnetPctPerMillion !== null && !opusShareBreached(state.plan, settings);
   }
 }
 
