@@ -12,14 +12,20 @@ pnpm build
 paperclipai plugin install <path to this directory>
 ```
 
+## Company
+
+Every 15 minutes the job lists the companies it can see (`companies.read`) and reads each one's stored settings with `ctx.config.get(companyId)`. The host answers only for a company that has stored settings. A company with none is denied, and the job logs it and moves on. Each configured company is paced with its own settings, and its pause and digest state is kept separately from the others.
+
+`companyId` is no longer read. The company is the one whose stored settings the job reads. The key stays in the schema so saved settings still validate.
+
 ## Settings
 
-Set these in the plugin settings. Only `companyId` and the two ratios are required before the plugin acts.
+Set these in the plugin settings. Only the two ratios are required before the plugin acts.
 
 | Setting | Default | Meaning |
 | --- | --- | --- |
-| `mode` | `dry-run` | `off`, `dry-run` (estimate and report; never pauses, but still resumes agents the plugin paused once their reasons end), or `enforce` (pause and resume). `off` stops the job entirely, so agents the plugin paused stay paused until the Board resumes them. |
-| `companyId` | unset | Company to pace. Unset means the job does nothing. |
+| `mode` | `dry-run` | `off`, `dry-run` (estimate and report; never pauses, but still resumes agents the plugin paused once their reasons end), or `enforce` (pause and resume). `off` stops the job for that company, so agents the plugin paused stay paused until the Board resumes them. |
+| `companyId` | unset | Ignored. The company is the one whose stored settings the job reads. Kept so saved settings still validate. |
 | `opusPctPerMillion` | unset | Percent of the weekly plan allowance per million Opus tokens. |
 | `sonnetPctPerMillion` | unset | Same for Sonnet and every other non-Opus model. |
 | `digestIssueId` | unset | Board issue that receives the digest. Unset logs the digest only. |
@@ -72,7 +78,9 @@ A run that is cancelled (for example `issue_reassigned`) has no `usage_json` and
 
 ## Capabilities
 
-`agents.read`, `agents.pause`, `agents.resume`, `jobs.schedule`, `issue.comments.create`, `plugin.state.read`, `plugin.state.write`, `database.namespace.read`, `database.namespace.migrate`.
+`agents.read`, `agents.pause`, `agents.resume`, `companies.read`, `jobs.schedule`, `issue.comments.create`, `plugin.state.read`, `plugin.state.write`, `database.namespace.read`, `database.namespace.migrate`.
+
+`companies.read` is new in 0.2.0. It lets the job list companies to find the ones with stored settings. The Board re-approves capabilities on upgrade, so this one needs approval.
 
 The database declaration forces the migrate capability and `migrationsDir`. `migrations/` holds only `.gitkeep`. The host rejects a `SELECT 1` migration at install, and its loader reads only `*.sql` files, so the empty directory satisfies `migrationsDir`; the plugin owns no tables. The digest and the worker log record every action.
 

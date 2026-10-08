@@ -2,7 +2,6 @@ export type Mode = "off" | "dry-run" | "enforce";
 
 export interface Settings {
   mode: Mode;
-  companyId: string | null;
   digestIssueId: string | null;
   opusPctPerMillion: number | null;
   sonnetPctPerMillion: number | null;
@@ -22,7 +21,6 @@ export interface Settings {
 
 export const DEFAULTS: Settings = {
   mode: "dry-run",
-  companyId: null,
   digestIssueId: null,
   opusPctPerMillion: null,
   sonnetPctPerMillion: null,
@@ -50,7 +48,7 @@ export const instanceConfigSchema = {
       default: DEFAULTS.mode,
       description: "off: do nothing, including resuming; agents the plugin paused stay paused until the Board resumes them. dry-run: estimate and post the digest, never pause, but resume agents the plugin paused once their reasons end. enforce: pause and resume agents.",
     },
-    companyId: { type: "string", description: "Company whose agents are paced. Unset means the job does nothing." },
+    companyId: { type: "string", description: "Ignored. The job paces the company whose stored config this is. Kept so saved configs still validate." },
     digestIssueId: { type: "string", description: "Board issue that receives the digest comments. Unset means the digest goes to the worker log only." },
     opusPctPerMillion: { type: "number", exclusiveMinimum: 0, description: "Percent of the weekly plan allowance used per million Opus tokens. Unset disables every rule." },
     sonnetPctPerMillion: { type: "number", exclusiveMinimum: 0, description: "Percent of the weekly plan allowance used per million Sonnet (and other non-Opus) tokens. Unset disables every rule." },
@@ -87,7 +85,6 @@ export function resolveSettings(raw: Record<string, unknown> | null | undefined)
   const anchor = text(r.weekResetAnchor);
   return {
     mode,
-    companyId: text(r.companyId),
     digestIssueId: text(r.digestIssueId),
     opusPctPerMillion: positive(r.opusPctPerMillion),
     sonnetPctPerMillion: positive(r.sonnetPctPerMillion),

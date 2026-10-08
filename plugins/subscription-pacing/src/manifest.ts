@@ -6,7 +6,7 @@ export const JOB_KEY = "pace-agents";
 const manifest: PaperclipPluginManifestV1 = {
   id: "subscription-pacing",
   apiVersion: 1,
-  version: "0.1.0",
+  version: "0.2.0",
   displayName: "Subscription Pacing",
   description: "Estimates each agent's share of the subscription plan from token usage, pauses agents that run ahead of pace, and resumes them when their window resets.",
   author: "Manastu Space",
@@ -15,6 +15,7 @@ const manifest: PaperclipPluginManifestV1 = {
     "agents.read",
     "agents.pause",
     "agents.resume",
+    "companies.read",
     "jobs.schedule",
     "database.namespace.migrate",
     "database.namespace.read",

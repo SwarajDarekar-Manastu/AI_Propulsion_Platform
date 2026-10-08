@@ -8,13 +8,16 @@ import { resolveSettings } from "../src/settings.js";
 
 type Agent = NonNullable<Awaited<ReturnType<PluginContext["agents"]["get"]>>>;
 type Issue = NonNullable<Awaited<ReturnType<PluginContext["issues"]["get"]>>>;
+type Company = NonNullable<Awaited<ReturnType<PluginContext["companies"]["get"]>>>;
 
 const COMPANY = "11111111-1111-1111-1111-111111111111";
+const SECOND_COMPANY = "33333333-3333-3333-3333-333333333333";
+const UNCONFIGURED_COMPANY = "44444444-4444-4444-4444-444444444444";
 const DIGEST_ISSUE = "22222222-2222-2222-2222-222222222222";
 const NOW = new Date("2026-10-08T12:00:00Z");
 
-function agent(id: string, status: Agent["status"], pauseReason: Agent["pauseReason"] = null, pausedAt: Date | null = null): Agent {
-  return { id, companyId: COMPANY, name: `Agent ${id}`, status, pauseReason, pausedAt } as Agent;
+function agent(id: string, status: Agent["status"], pauseReason: Agent["pauseReason"] = null, pausedAt: Date | null = null, companyId = COMPANY): Agent {
+  return { id, companyId, name: `Agent ${id}`, status, pauseReason, pausedAt } as Agent;
 }
 
 beforeEach(() => {
@@ -33,10 +36,25 @@ interface Row {
   session_tokens: number;
 }
 
-async function setup(config: Record<string, unknown>, agents: Agent[], rows: Row[], cancelled: unknown[] = []) {
-  const harness = createTestHarness({ manifest, config, capabilities: [...manifest.capabilities, "issue.comments.read"] });
-  harness.seed({ agents, issues: [{ id: DIGEST_ISSUE, companyId: COMPANY, title: "Digest" } as Issue] });
+type ConfigGet = PluginContext["config"]["get"];
+
+function hostWith(configs: Record<string, Record<string, unknown>>): ConfigGet {
+  return async (companyId?: string) => {
+    const config = companyId === undefined ? undefined : configs[companyId];
+    if (config === undefined) throw new Error("company context is required");
+    return { ...config };
+  };
+}
+
+async function setup(config: Record<string, unknown> | null, agents: Agent[], rows: Row[], cancelled: unknown[] = []) {
+  const harness = createTestHarness({ manifest, capabilities: [...manifest.capabilities, "issue.comments.read"] });
+  harness.seed({
+    companies: [{ id: COMPANY, name: "Manastu" } as Company],
+    agents,
+    issues: [{ id: DIGEST_ISSUE, companyId: COMPANY, title: "Digest" } as Issue],
+  });
   harness.ctx.db.query = (async (sql: string) => (sql.includes("heartbeat_runs") ? cancelled : rows)) as typeof harness.ctx.db.query;
+  harness.ctx.config.get = hostWith(config === null ? {} : { [COMPANY]: config });
   const pause = harness.ctx.agents.pause.bind(harness.ctx.agents);
   harness.ctx.agents.pause = async (agentId, companyId) => {
     const paused = { ...(await pause(agentId, companyId)), pausedAt: new Date() };
@@ -47,8 +65,13 @@ async function setup(config: Record<string, unknown>, agents: Agent[], rows: Row
   return harness;
 }
 
-const calibrated = { companyId: COMPANY, digestIssueId: DIGEST_ISSUE, opusPctPerMillion: 1, sonnetPctPerMillion: 0.5 };
+const calibrated = { digestIssueId: DIGEST_ISSUE, opusPctPerMillion: 1, sonnetPctPerMillion: 0.5 };
+const ENFORCE = { ...calibrated, mode: "enforce" };
 const hot: Row = { agent_id: "a1", model: "claude-sonnet-5-5", week_tokens: 24_000_000, session_tokens: 24_000_000 };
+
+function pace(ctx: PluginContext, at: Date, config: Record<string, unknown> = ENFORCE) {
+  return runPacing(ctx, COMPANY, resolveSettings(config), at);
+}
 
 async function statusOf(harness: Awaited<ReturnType<typeof setup>>, id: string) {
   return (await harness.ctx.agents.get(id, COMPANY))?.status;
@@ -66,6 +89,7 @@ describe("manifest", () => {
       "agents.pause",
       "agents.read",
       "agents.resume",
+      "companies.read",
       "database.namespace.migrate",
       "database.namespace.read",
       "issue.comments.create",
@@ -77,8 +101,8 @@ describe("manifest", () => {
 });
 
 describe("pace-agents job", () => {
-  it("does nothing when no company is configured", async () => {
-    const harness = await setup({ mode: "enforce", opusPctPerMillion: 1, sonnetPctPerMillion: 0.5 }, [agent("a1", "idle")], [hot]);
+  it("does nothing for a company with no stored config", async () => {
+    const harness = await setup(null, [agent("a1", "idle")], [hot]);
     await harness.runJob(JOB_KEY);
     expect(await statusOf(harness, "a1")).toBe("idle");
     expect(harness.dbQueries).toEqual([]);
@@ -87,7 +111,7 @@ describe("pace-agents job", () => {
   it("does not pause anyone when settings are unset, even in enforce mode", async () => {
     const agents = ["a1", "a2", "a3"].map((id) => agent(id, "idle"));
     const rows = agents.map((a) => ({ ...hot, agent_id: a.id }));
-    const harness = await setup({ companyId: COMPANY, mode: "enforce" }, agents, rows);
+    const harness = await setup({ mode: "enforce" }, agents, rows);
     await harness.runJob(JOB_KEY);
     expect(await Promise.all(agents.map((a) => statusOf(harness, a.id)))).toEqual(["idle", "idle", "idle"]);
   });
@@ -102,7 +126,7 @@ describe("pace-agents job", () => {
   });
 
   it("pauses an agent over the session limit and posts the digest in enforce mode", async () => {
-    const harness = await setup({ ...calibrated, mode: "enforce" }, [agent("a1", "idle"), agent("a2", "idle")], [hot]);
+    const harness = await setup(ENFORCE, [agent("a1", "idle"), agent("a2", "idle")], [hot]);
     await harness.runJob(JOB_KEY);
     expect(await statusOf(harness, "a1")).toBe("paused");
     expect(await statusOf(harness, "a2")).toBe("idle");
@@ -113,37 +137,37 @@ describe("pace-agents job", () => {
   it("pauses at most maxPausesPerRun agents and defers the rest", async () => {
     const agents = ["a1", "a2", "a3"].map((id) => agent(id, "idle"));
     const rows = agents.map((a) => ({ ...hot, agent_id: a.id }));
-    const harness = await setup({ ...calibrated, mode: "enforce", maxPausesPerRun: 2 }, agents, rows);
+    const harness = await setup({ ...ENFORCE, maxPausesPerRun: 2 }, agents, rows);
     await harness.runJob(JOB_KEY);
     expect(await Promise.all(agents.map((a) => statusOf(harness, a.id)))).toEqual(["paused", "paused", "idle"]);
   });
 
   it("resumes an agent it paused once the session window has passed", async () => {
-    const harness = await setup({ ...calibrated, mode: "enforce" }, [agent("a1", "idle")], [hot]);
+    const harness = await setup(ENFORCE, [agent("a1", "idle")], [hot]);
     await harness.runJob(JOB_KEY);
     expect(await statusOf(harness, "a1")).toBe("paused");
 
     harness.ctx.db.query = (async () => []) as typeof harness.ctx.db.query;
-    await runPacing(harness.ctx, new Date("2026-10-08T16:59:00Z"));
+    await pace(harness.ctx, new Date("2026-10-08T16:59:00Z"));
     expect(await statusOf(harness, "a1")).toBe("paused");
-    await runPacing(harness.ctx, new Date("2026-10-08T17:00:00Z"));
+    await pace(harness.ctx, new Date("2026-10-08T17:00:00Z"));
     expect(await statusOf(harness, "a1")).toBe("idle");
   });
 
   it("does not resume an agent the Board paused", async () => {
-    const harness = await setup({ ...calibrated, mode: "enforce" }, [agent("a2", "paused", "manual", new Date("2026-10-08T01:00:00Z"))], []);
-    await runPacing(harness.ctx, new Date("2026-10-08T23:00:00Z"));
+    const harness = await setup(ENFORCE, [agent("a2", "paused", "manual", new Date("2026-10-08T01:00:00Z"))], []);
+    await pace(harness.ctx, new Date("2026-10-08T23:00:00Z"));
     expect(await statusOf(harness, "a2")).toBe("paused");
   });
 
   it("does not resume an agent the Board resumed and paused again after the plugin paused it", async () => {
-    const harness = await setup({ ...calibrated, mode: "enforce" }, [agent("a1", "idle")], [hot]);
+    const harness = await setup(ENFORCE, [agent("a1", "idle")], [hot]);
     await harness.runJob(JOB_KEY);
     expect(await statusOf(harness, "a1")).toBe("paused");
 
     harness.seed({ agents: [agent("a1", "paused", "manual", new Date("2026-10-08T12:10:00Z"))] });
     harness.ctx.db.query = (async () => []) as typeof harness.ctx.db.query;
-    await runPacing(harness.ctx, new Date("2026-10-08T18:00:00Z"));
+    await pace(harness.ctx, new Date("2026-10-08T18:00:00Z"));
     expect(await statusOf(harness, "a1")).toBe("paused");
   });
 
@@ -151,7 +175,7 @@ describe("pace-agents job", () => {
     const ids = Array.from({ length: 12 }, (_, i) => `a${i + 1}`);
     const usage = (a1: number, rest: number): Row[] =>
       ids.map((id, i) => ({ agent_id: id, model: "claude-sonnet-5-5", week_tokens: i === 0 ? a1 : rest, session_tokens: 0 }));
-    const harness = await setup({ ...calibrated, mode: "enforce" }, ids.map((id) => agent(id, "idle")), usage(30_000_000, 1_000_000));
+    const harness = await setup(ENFORCE, ids.map((id) => agent(id, "idle")), usage(30_000_000, 1_000_000));
     const paused = async () => ids.filter((_, i) => statuses[i] === "paused");
     let statuses: Array<string | undefined> = [];
     const snapshot = async () => {
@@ -159,34 +183,34 @@ describe("pace-agents job", () => {
       return paused();
     };
 
-    await runPacing(harness.ctx, new Date("2026-10-05T06:00:00Z"));
+    await pace(harness.ctx, new Date("2026-10-05T06:00:00Z"));
     expect(await snapshot()).toEqual(["a1", "a2"]);
 
-    await runPacing(harness.ctx, new Date("2026-10-06T00:00:00Z"));
+    await pace(harness.ctx, new Date("2026-10-06T00:00:00Z"));
     expect(await snapshot()).toEqual(["a1"]);
 
     harness.ctx.db.query = (async (sql: string) => (sql.includes("heartbeat_runs") ? [] : usage(30_000_000, 4_000_000))) as typeof harness.ctx.db.query;
-    await runPacing(harness.ctx, new Date("2026-10-06T12:00:00Z"));
+    await pace(harness.ctx, new Date("2026-10-06T12:00:00Z"));
     expect(await snapshot()).toEqual(["a1", "a2", "a3"]);
   });
 
   it("pauses one batch per pace breach and resumes it when the plan is back on pace", async () => {
     const ids = Array.from({ length: 12 }, (_, i) => `a${i + 1}`);
     const rows = ids.map((id, i) => ({ agent_id: id, model: "claude-sonnet-5-5", week_tokens: (12 - i) * 1_000_000, session_tokens: 0 }));
-    const harness = await setup({ ...calibrated, mode: "enforce" }, ids.map((id) => agent(id, "idle")), rows);
-    for (const at of ["06:00", "06:15", "06:30", "06:45"]) await runPacing(harness.ctx, new Date(`2026-10-05T${at}:00Z`));
+    const harness = await setup(ENFORCE, ids.map((id) => agent(id, "idle")), rows);
+    for (const at of ["06:00", "06:15", "06:30", "06:45"]) await pace(harness.ctx, new Date(`2026-10-05T${at}:00Z`));
     const statuses = await Promise.all(ids.map((id) => statusOf(harness, id)));
     expect(ids.filter((_, i) => statuses[i] === "paused")).toEqual(["a1", "a2"]);
 
     harness.ctx.db.query = (async () => []) as typeof harness.ctx.db.query;
-    await runPacing(harness.ctx, new Date("2026-10-05T07:00:00Z"));
+    await pace(harness.ctx, new Date("2026-10-05T07:00:00Z"));
     expect(await Promise.all(["a1", "a2"].map((id) => statusOf(harness, id)))).toEqual(["idle", "idle"]);
   });
 
   it("skips exempt agents in plan rules and reads exemptAgentIds from settings", async () => {
     const agents = [agent("a1", "idle"), agent("a2", "idle")];
     const rows = agents.map((a) => ({ ...hot, agent_id: a.id }));
-    const harness = await setup({ ...calibrated, mode: "enforce", exemptAgentIds: ["a1"] }, agents, rows);
+    const harness = await setup({ ...ENFORCE, exemptAgentIds: ["a1"] }, agents, rows);
     await harness.runJob(JOB_KEY);
     expect(await Promise.all(agents.map((a) => statusOf(harness, a.id)))).toEqual(["idle", "paused"]);
   });
@@ -196,7 +220,7 @@ describe("pace-agents job", () => {
       { agent_id: "a1", model: "claude-opus-5-5", week_tokens: "20000000", session_tokens: "20000000" },
       { agent_id: "a1", model: null, week_tokens: "4000000", session_tokens: "4000000" },
     ] as unknown as Row[];
-    const harness = await setup({ ...calibrated, mode: "enforce" }, [agent("a1", "idle")], rows);
+    const harness = await setup(ENFORCE, [agent("a1", "idle")], rows);
     await harness.runJob(JOB_KEY);
     expect(await statusOf(harness, "a1")).toBe("paused");
     const body = (await harness.ctx.issues.listComments(DIGEST_ISSUE, COMPANY))[0]?.body ?? "";
@@ -206,7 +230,7 @@ describe("pace-agents job", () => {
   it("defers agents over the per-run cap and pauses the heaviest first", async () => {
     const ids = ["a1", "a2", "a3", "a4", "a5"];
     const rows = ids.map((id, i) => ({ agent_id: id, model: "claude-sonnet-5-5", week_tokens: (50 + i) * 1_000_000, session_tokens: 0 }));
-    const harness = await setup({ ...calibrated, mode: "enforce", maxPausesPerRun: 2 }, ids.map((id) => agent(id, "idle")), rows);
+    const harness = await setup({ ...ENFORCE, maxPausesPerRun: 2 }, ids.map((id) => agent(id, "idle")), rows);
     await harness.runJob(JOB_KEY);
     expect(await Promise.all(ids.map((id) => statusOf(harness, id)))).toEqual(["idle", "idle", "idle", "paused", "paused"]);
     const body = (await harness.ctx.issues.listComments(DIGEST_ISSUE, COMPANY))[0]?.body ?? "";
@@ -215,24 +239,22 @@ describe("pace-agents job", () => {
   });
 
   it("still resumes its own pauses in dry-run mode after the window", async () => {
-    const harness = await setup({ ...calibrated, mode: "enforce" }, [agent("a1", "idle")], [hot]);
+    const harness = await setup(ENFORCE, [agent("a1", "idle")], [hot]);
     await harness.runJob(JOB_KEY);
     expect(await statusOf(harness, "a1")).toBe("paused");
     harness.ctx.db.query = (async () => []) as typeof harness.ctx.db.query;
-    harness.ctx.config.get = (async () => ({ ...calibrated, mode: "dry-run" })) as typeof harness.ctx.config.get;
-    const result = await runPacing(harness.ctx, new Date("2026-10-08T17:00:00Z"));
+    const result = await pace(harness.ctx, new Date("2026-10-08T17:00:00Z"), { ...calibrated, mode: "dry-run" });
     expect(result?.agents.map((r) => r.outcome)).toEqual(["resumed"]);
     expect(await statusOf(harness, "a1")).toBe("idle");
     expect(formatDigest(result!)).toContain("Dry run. Nothing is paused. The plugin still resumes agents it paused earlier once their reasons end.");
   });
 
   async function pausedThenConfig(config: Record<string, unknown>, at: string) {
-    const harness = await setup({ ...calibrated, mode: "enforce" }, [agent("a1", "idle")], [hot]);
+    const harness = await setup(ENFORCE, [agent("a1", "idle")], [hot]);
     await harness.runJob(JOB_KEY);
     expect(await statusOf(harness, "a1")).toBe("paused");
     harness.ctx.db.query = (async () => []) as typeof harness.ctx.db.query;
-    harness.ctx.config.get = (async () => config) as typeof harness.ctx.config.get;
-    await runPacing(harness.ctx, new Date(at));
+    await pace(harness.ctx, new Date(at), config);
     return harness;
   }
 
@@ -243,47 +265,46 @@ describe("pace-agents job", () => {
 
   it("keeps a pace pause while a ratio is unset", async () => {
     const rows = Array.from({ length: 12 }, (_, i) => ({ agent_id: `a${i + 1}`, model: "claude-sonnet-5-5", week_tokens: (12 - i) * 1_000_000, session_tokens: 0 }));
-    const harness = await setup({ ...calibrated, mode: "enforce" }, rows.map((r) => agent(r.agent_id, "idle")), rows);
-    await runPacing(harness.ctx, new Date("2026-10-05T06:00:00Z"));
+    const harness = await setup(ENFORCE, rows.map((r) => agent(r.agent_id, "idle")), rows);
+    await pace(harness.ctx, new Date("2026-10-05T06:00:00Z"));
     expect(await statusOf(harness, "a1")).toBe("paused");
     harness.ctx.db.query = (async () => []) as typeof harness.ctx.db.query;
-    harness.ctx.config.get = (async () => ({ ...calibrated, mode: "enforce", sonnetPctPerMillion: undefined })) as typeof harness.ctx.config.get;
-    await runPacing(harness.ctx, new Date("2026-10-05T07:00:00Z"));
+    await pace(harness.ctx, new Date("2026-10-05T07:00:00Z"), { ...ENFORCE, sonnetPctPerMillion: undefined });
     expect(await statusOf(harness, "a1")).toBe("paused");
   });
 
   it("reports failed when pause throws and leaves the agent unrecorded", async () => {
-    const harness = await setup({ ...calibrated, mode: "enforce" }, [agent("a1", "idle")], [hot]);
+    const harness = await setup(ENFORCE, [agent("a1", "idle")], [hot]);
     harness.ctx.agents.pause = async () => {
       throw new Error("boom");
     };
-    const result = await runPacing(harness.ctx, NOW);
+    const result = await pace(harness.ctx, NOW);
     expect(result?.agents.map((r) => r.outcome)).toEqual(["failed"]);
   });
 
   it("reports failed when resume throws and retries next run", async () => {
-    const harness = await setup({ ...calibrated, mode: "enforce" }, [agent("a1", "idle")], [hot]);
+    const harness = await setup(ENFORCE, [agent("a1", "idle")], [hot]);
     await harness.runJob(JOB_KEY);
     harness.ctx.db.query = (async () => []) as typeof harness.ctx.db.query;
     const resume = harness.ctx.agents.resume.bind(harness.ctx.agents);
     harness.ctx.agents.resume = async () => {
       throw new Error("boom");
     };
-    const failed = await runPacing(harness.ctx, new Date("2026-10-08T17:00:00Z"));
+    const failed = await pace(harness.ctx, new Date("2026-10-08T17:00:00Z"));
     expect(failed?.agents.map((r) => r.outcome)).toEqual(["failed"]);
     harness.ctx.agents.resume = resume;
-    const retried = await runPacing(harness.ctx, new Date("2026-10-08T17:15:00Z"));
+    const retried = await pace(harness.ctx, new Date("2026-10-08T17:15:00Z"));
     expect(retried?.agents.map((r) => r.outcome)).toEqual(["resumed"]);
   });
 
   it("keeps the state and does not throw when the digest comment fails", async () => {
-    const harness = await setup({ ...calibrated, mode: "enforce" }, [agent("a1", "idle")], [hot]);
+    const harness = await setup(ENFORCE, [agent("a1", "idle")], [hot]);
     harness.ctx.issues.createComment = async () => {
       throw new Error("boom");
     };
     await harness.runJob(JOB_KEY);
     expect(await statusOf(harness, "a1")).toBe("paused");
-    expect(await harness.ctx.state.get({ scopeKind: "instance", stateKey: "last-digest-at" })).toBeNull();
+    expect(await harness.ctx.state.get({ scopeKind: "company", scopeId: COMPANY, stateKey: "last-digest-at" })).toBeNull();
   });
 
   it("charges cancelled runs without usage and reports them", async () => {
@@ -296,6 +317,7 @@ describe("pace-agents job", () => {
 
   it("says estimates are off when ratios are unset", () => {
     const text = formatDigest({
+      companyId: COMPANY,
       settings: resolveSettings({}),
       now: NOW,
       weekElapsedPct: 0,
@@ -305,5 +327,29 @@ describe("pace-agents job", () => {
       released: [],
     });
     expect(text).toContain("**Estimates are off.**");
+  });
+});
+
+describe("company context", () => {
+  it("paces every company with a stored config and keeps each company's pauses", async () => {
+    const harness = await setup(ENFORCE, [agent("a1", "idle")], [hot]);
+    harness.seed({
+      companies: [{ id: SECOND_COMPANY, name: "Second" } as Company],
+      agents: [agent("b1", "idle", null, null, SECOND_COMPANY)],
+    });
+    harness.ctx.config.get = hostWith({ [COMPANY]: ENFORCE, [SECOND_COMPANY]: ENFORCE });
+    await harness.runJob(JOB_KEY);
+    expect(await statusOf(harness, "a1")).toBe("paused");
+
+    harness.ctx.db.query = (async () => []) as typeof harness.ctx.db.query;
+    await pace(harness.ctx, new Date("2026-10-08T17:00:00Z"));
+    expect(await statusOf(harness, "a1")).toBe("idle");
+  });
+
+  it("skips a company with no stored config instead of failing the run", async () => {
+    const harness = await setup(ENFORCE, [agent("a1", "idle")], [hot]);
+    harness.seed({ companies: [{ id: UNCONFIGURED_COMPANY, name: "Unconfigured" } as Company] });
+    await expect(harness.runJob(JOB_KEY)).resolves.toBeUndefined();
+    expect(await statusOf(harness, "a1")).toBe("paused");
   });
 });

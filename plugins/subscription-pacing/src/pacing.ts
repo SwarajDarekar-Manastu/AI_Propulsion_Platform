@@ -1,12 +1,12 @@
 import type { PluginContext } from "@paperclipai/plugin-sdk";
 import { choosePauses, emptyUsage, estimate, fairSharePct, planEstimate, reasonEnded, weekElapsedPct, weekStart, windowReset, type Decision, type Estimate, type PausedEntry } from "./rules.js";
-import { resolveSettings, type Settings } from "./settings.js";
+import type { Settings } from "./settings.js";
 import { loadUsage } from "./usage.js";
 
 type PausedSet = Record<string, PausedEntry>;
 
-const PAUSED_KEY = { scopeKind: "instance", stateKey: "paused-agents" } as const;
-const DIGEST_KEY = { scopeKind: "instance", stateKey: "last-digest-at" } as const;
+const pausedKey = (companyId: string) => ({ scopeKind: "company", scopeId: companyId, stateKey: "paused-agents" }) as const;
+const digestKey = (companyId: string) => ({ scopeKind: "company", scopeId: companyId, stateKey: "last-digest-at" }) as const;
 const HOUR_MS = 60 * 60 * 1000;
 
 export interface AgentReport {
@@ -20,6 +20,7 @@ export interface AgentReport {
 }
 
 export interface PacingResult {
+  companyId: string;
   settings: Settings;
   now: Date;
   weekElapsedPct: number;
@@ -33,19 +34,17 @@ function isoOrNull(value: Date | string | null | undefined): string | null {
   return value === null || value === undefined ? null : new Date(value).toISOString();
 }
 
-export async function runPacing(ctx: PluginContext, now: Date): Promise<PacingResult | null> {
-  const settings = resolveSettings(await ctx.config.get());
-  if (settings.mode === "off" || settings.companyId === null) {
-    ctx.logger.info("Pacing skipped", { mode: settings.mode, companyConfigured: settings.companyId !== null });
+export async function runPacing(ctx: PluginContext, companyId: string, settings: Settings, now: Date): Promise<PacingResult | null> {
+  if (settings.mode === "off") {
+    ctx.logger.info("Pacing skipped", { companyId, mode: settings.mode });
     return null;
   }
-  const companyId = settings.companyId;
 
   const agents = (await ctx.agents.list({ companyId, limit: 500 })).filter((a) => a.status !== "terminated");
   const sessionStart = new Date(now.getTime() - settings.sessionHours * HOUR_MS);
   const usage = await loadUsage(ctx, companyId, weekStart(now, settings), sessionStart);
 
-  const stored = ((await ctx.state.get(PAUSED_KEY)) as PausedSet | null) ?? {};
+  const stored = ((await ctx.state.get(pausedKey(companyId))) as PausedSet | null) ?? {};
   const pausedSet: PausedSet = {};
   const released: string[] = [];
   for (const agent of agents) {
@@ -128,15 +127,15 @@ export async function runPacing(ctx: PluginContext, now: Date): Promise<PacingRe
         continue;
       }
       pausedSet[report.agentId] = { pausedAt, violations: report.decision.kind === "pause" ? report.decision.violations : [] };
-      await ctx.state.set(PAUSED_KEY, pausedSet);
+      await ctx.state.set(pausedKey(companyId), pausedSet);
     } catch (error) {
       ctx.logger.error("Pause failed", { agentId: report.agentId, error: String(error) });
       report.outcome = "failed";
     }
   }
 
-  await ctx.state.set(PAUSED_KEY, pausedSet);
-  return { settings, now, weekElapsedPct: elapsed, fairSharePct: ctxPacing.fairSharePct, plan, agents: reports, released };
+  await ctx.state.set(pausedKey(companyId), pausedSet);
+  return { companyId, settings, now, weekElapsedPct: elapsed, fairSharePct: ctxPacing.fairSharePct, plan, agents: reports, released };
 }
 
 function fmt(n: number): string {
@@ -178,18 +177,19 @@ export function digestDue(result: PacingResult, lastDigestAt: string | null): bo
 
 export async function postDigest(ctx: PluginContext, result: PacingResult): Promise<void> {
   const body = formatDigest(result);
-  const last = (await ctx.state.get(DIGEST_KEY)) as string | null;
+  const { companyId } = result;
+  const last = (await ctx.state.get(digestKey(companyId))) as string | null;
   if (!digestDue(result, last)) return;
-  const { digestIssueId, companyId } = result.settings;
-  if (digestIssueId === null || companyId === null) {
-    ctx.logger.info("Digest (no digestIssueId set)", { body });
+  const { digestIssueId } = result.settings;
+  if (digestIssueId === null) {
+    ctx.logger.info("Digest (no digestIssueId set)", { companyId, body });
   } else {
     try {
       await ctx.issues.createComment(digestIssueId, body, companyId);
     } catch (error) {
-      ctx.logger.error("Digest comment failed", { digestIssueId, error: String(error) });
+      ctx.logger.error("Digest comment failed", { companyId, digestIssueId, error: String(error) });
       return;
     }
   }
-  await ctx.state.set(DIGEST_KEY, result.now.toISOString());
+  await ctx.state.set(digestKey(companyId), result.now.toISOString());
 }
