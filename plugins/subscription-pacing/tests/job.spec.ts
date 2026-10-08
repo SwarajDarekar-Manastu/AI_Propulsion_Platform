@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createTestHarness } from "@paperclipai/plugin-sdk/testing";
-import { JsonRpcCallError, PLUGIN_RPC_ERROR_CODES, type PluginContext } from "@paperclipai/plugin-sdk";
+import { JSONRPC_ERROR_CODES, JsonRpcCallError, PLUGIN_RPC_ERROR_CODES, type PluginContext } from "@paperclipai/plugin-sdk";
 import manifest, { JOB_KEY } from "../src/manifest.js";
 import plugin from "../src/worker.js";
 import { formatDigest, runPacing } from "../src/pacing.js";
@@ -365,7 +365,7 @@ describe("company context", () => {
   it("fails the run when reading a configured company's config fails for another reason", async () => {
     const harness = await setup(ENFORCE, [agent("a1", "idle")], [hot]);
     harness.ctx.config.get = async () => {
-      throw new Error("connection terminated");
+      throw new JsonRpcCallError({ code: JSONRPC_ERROR_CODES.INTERNAL_ERROR, message: "connection terminated" });
     };
     await expect(harness.runJob(JOB_KEY)).rejects.toThrow("connection terminated");
     expect(await statusOf(harness, "a1")).toBe("idle");
