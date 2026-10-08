@@ -12,8 +12,8 @@ const idle: AgentUsage = {
   weekCancelledRuns: 0,
 };
 
-const running: AgentPacingState = { paused: false, pausedByPlugin: false, pausedManually: false, exempt: false };
-const pausedByPlugin: AgentPacingState = { paused: true, pausedByPlugin: true, pausedManually: false, exempt: false };
+const running: AgentPacingState = { paused: false, pausedByPlugin: false, pausedByOther: false, exempt: false };
+const pausedByPlugin: AgentPacingState = { paused: true, pausedByPlugin: true, pausedByOther: false, exempt: false };
 const halfWeek: PacingContext = { weekElapsedPct: 50, fairSharePct: 20 };
 
 function run(usage: Partial<AgentUsage>, state: AgentPacingState, ctx: PacingContext) {
@@ -83,8 +83,8 @@ describe("resume rule", () => {
     expect(run({}, { ...pausedByPlugin, pausedByPlugin: false }, halfWeek)).toEqual({ kind: "none" });
   });
 
-  it("does not resume an agent the Board paused manually", () => {
-    expect(run({}, { ...pausedByPlugin, pausedManually: true }, halfWeek)).toEqual({ kind: "none" });
+  it("does not resume an agent the Board or budget paused for another reason", () => {
+    expect(run({}, { ...pausedByPlugin, pausedByOther: true }, halfWeek)).toEqual({ kind: "none" });
   });
 });
 

@@ -34,7 +34,7 @@ export type Decision =
 export interface AgentPacingState {
   paused: boolean;
   pausedByPlugin: boolean;
-  pausedManually: boolean;
+  pausedByOther: boolean;
   exempt: boolean;
 }
 
@@ -89,6 +89,6 @@ export function decide(est: Estimate | null, state: AgentPacingState, ctx: Pacin
   if (!state.paused) {
     return found.length > 0 && !state.exempt ? { kind: "pause", violations: found } : { kind: "none" };
   }
-  if (state.pausedByPlugin && !state.pausedManually && found.length === 0) return { kind: "resume" };
+  if (state.pausedByPlugin && !state.pausedByOther && found.length === 0) return { kind: "resume" };
   return { kind: "none" };
 }
