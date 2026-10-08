@@ -24,13 +24,14 @@ GROUP BY agent_id, model`;
 
 const CANCELLED_SQL = `
 SELECT r.agent_id,
-  COUNT(*) FILTER (WHERE COALESCE(r.started_at, r.created_at) >= $2::timestamptz) AS week_runs,
-  COUNT(*) FILTER (WHERE COALESCE(r.started_at, r.created_at) >= $3::timestamptz) AS session_runs
+  COUNT(*) FILTER (WHERE r.started_at >= $2::timestamptz) AS week_runs,
+  COUNT(*) FILTER (WHERE r.started_at >= $3::timestamptz) AS session_runs
 FROM public.heartbeat_runs r
 WHERE r.company_id = $1::uuid
   AND r.status = 'cancelled'
+  AND r.started_at IS NOT NULL
   AND (r.usage_json IS NULL OR r.usage_json = 'null'::jsonb)
-  AND COALESCE(r.started_at, r.created_at) >= LEAST($2::timestamptz, $3::timestamptz)
+  AND r.started_at >= LEAST($2::timestamptz, $3::timestamptz)
   AND NOT EXISTS (SELECT 1 FROM public.cost_events c WHERE c.heartbeat_run_id = r.id)
 GROUP BY r.agent_id`;
 

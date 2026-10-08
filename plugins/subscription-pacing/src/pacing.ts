@@ -1,5 +1,5 @@
 import type { PluginContext } from "@paperclipai/plugin-sdk";
-import { choosePauses, emptyUsage, estimate, fairSharePct, planEstimate, weekElapsedPct, weekStart, windowReset, type Decision, type Estimate, type PausedEntry } from "./rules.js";
+import { choosePauses, emptyUsage, estimate, fairSharePct, planEstimate, reasonEnded, weekElapsedPct, weekStart, windowReset, type Decision, type Estimate, type PausedEntry } from "./rules.js";
 import { resolveSettings, type Settings } from "./settings.js";
 import { loadUsage } from "./usage.js";
 
@@ -16,7 +16,7 @@ export interface AgentReport {
   estimate: Estimate | null;
   cancelledRuns: number;
   decision: Decision;
-  outcome: "paused" | "resumed" | "would-pause" | "would-resume" | "deferred" | "failed" | "none";
+  outcome: "paused" | "resumed" | "would-pause" | "deferred" | "failed" | "none";
 }
 
 export interface PacingResult {
@@ -66,14 +66,19 @@ export async function runPacing(ctx: PluginContext, now: Date): Promise<PacingRe
     return est === null ? [] : [{ agentId: a.id, estimate: est, exempt: exempt.has(a.id), paused: a.status === "paused" }];
   });
   const plan = planEstimate(candidates.map((c) => c.estimate));
-  const held = new Set(Object.values(pausedSet).flatMap((e) => e.violations));
+  const planState = { plan, weekElapsedPct: elapsed };
+  for (const [id, entry] of Object.entries(pausedSet)) {
+    const inForce = entry.violations.filter((v) => !reasonEnded(v, entry, now, settings, planState));
+    if (inForce.length > 0) pausedSet[id] = { ...entry, violations: inForce };
+  }
+  const held = new Set(Object.values(pausedSet).flatMap((e) => e.violations.filter((v) => !reasonEnded(v, e, now, settings, planState))));
   const pauseOrders = new Map(choosePauses(candidates, ctxPacing, settings, held).map((o) => [o.agentId, o.violations]));
 
   const reports: AgentReport[] = agents.map((agent) => {
     const entry = pausedSet[agent.id];
     const violations = pauseOrders.get(agent.id);
     let decision: Decision = { kind: "none" };
-    if (entry && windowReset(entry, now, settings, { plan, weekElapsedPct: elapsed })) decision = { kind: "resume" };
+    if (entry && windowReset(entry, now, settings, planState)) decision = { kind: "resume" };
     else if (!entry && agent.status !== "paused" && violations) decision = { kind: "pause", violations };
     return {
       agentId: agent.id,
@@ -93,10 +98,6 @@ export async function runPacing(ctx: PluginContext, now: Date): Promise<PacingRe
     .sort((a, b) => (b.estimate?.weekPct ?? 0) - (a.estimate?.weekPct ?? 0));
 
   for (const report of resumes) {
-    if (!enforce) {
-      report.outcome = "would-resume";
-      continue;
-    }
     try {
       await ctx.agents.resume(report.agentId, companyId);
       delete pausedSet[report.agentId];
@@ -155,7 +156,7 @@ export function formatDigest(result: PacingResult): string {
     lines.push(``, `**Estimates are off.** Set \`opusPctPerMillion\` and \`sonnetPctPerMillion\` in the plugin settings. No agent is paused until both are set.`);
   }
   if (settings.mode === "dry-run") {
-    lines.push(``, `Dry run. Nothing is paused or resumed. Set \`mode\` to \`enforce\` to act on these decisions.`);
+    lines.push(``, `Dry run. Nothing is paused. The plugin still resumes agents it paused earlier once their reasons end. Set \`mode\` to \`enforce\` to pause.`);
   }
   lines.push(``, `| Agent | Status | Session % | Week % | Opus % | Cancelled runs | Decision |`, `| --- | --- | --- | --- | --- | --- | --- |`);
   for (const r of result.agents) {

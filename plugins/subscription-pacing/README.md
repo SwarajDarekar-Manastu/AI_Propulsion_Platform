@@ -18,7 +18,7 @@ Set these in the plugin settings. Only `companyId` and the two ratios are requir
 
 | Setting | Default | Meaning |
 | --- | --- | --- |
-| `mode` | `dry-run` | `off`, `dry-run` (estimate and report only), or `enforce` (pause and resume). |
+| `mode` | `dry-run` | `off`, `dry-run` (estimate and report; never pauses, but still resumes agents the plugin paused once their reasons end), or `enforce` (pause and resume). `off` stops the job entirely, so agents the plugin paused stay paused until the Board resumes them. |
 | `companyId` | unset | Company to pace. Unset means the job does nothing. |
 | `opusPctPerMillion` | unset | Percent of the weekly plan allowance per million Opus tokens. |
 | `sonnetPctPerMillion` | unset | Same for Sonnet and every other non-Opus model. |
@@ -49,11 +49,11 @@ Rules 1, 2 and 4 measure the whole plan: the job sums the estimate over every ag
 3. An agent's weekly estimate is above its weekly share.
 4. Opus is more than `maxOpusSharePct` of the plan's weekly estimate (applies once the plan estimate is at least `opusRuleMinWeekPct`).
 
-Tokens of paused agents still count toward the plan, so a plan rule stays fired after the pauses. While the plugin holds an agent paused for a plan rule (session, pace or Opus), that rule orders no new pauses. One breach pauses one batch of at most `maxPausesPerRun` agents. Rule 3 is per agent and is unaffected. Put reviewers and other agents you never want paused in `exemptAgentIds`. The Network and Observability Engineer must be there (`model-roles.md`: never paused by pacing).
+Tokens of paused agents still count toward the plan, so a plan rule stays fired after the pauses. While the plugin holds an agent paused for a plan rule (session, pace or Opus) and that rule's reason is still in force, that rule orders no new pauses. A reason that has ended is dropped from the stored pause, so a later breach is handled as a new one. One breach pauses one batch of at most `maxPausesPerRun` agents. Rule 3 is per agent and is unaffected. Put reviewers and other agents you never want paused in `exemptAgentIds`. The Network and Observability Engineer must be there (`model-roles.md`: never paused by pacing).
 
 ## Resume
 
-The plugin resumes an agent only when it paused that agent and the windows of the rules that paused it have reset. A session pause ends `sessionHours` after the pause. A rule 3 pause ends when the next plan week starts. A pace pause ends when the plan's lead is back at or under `weeklyPaceLeadPts`. An Opus pause ends when the plan's Opus share is at or under `maxOpusSharePct`, the plan's weekly estimate is under `opusRuleMinWeekPct`, or the limit is unset. A pause with several reasons ends when every reason has ended. A pause is the plugin's own only while the agent is paused with the same `pausedAt` that `agents.pause` returned. If the Board resumes and pauses the agent again, `pausedAt` changes and the plugin lets go of it.
+The plugin resumes an agent only when it paused that agent and the windows of the rules that paused it have reset. A session pause ends `sessionHours` after the pause. A rule 3 pause ends when the next plan week starts. A pace pause ends when the plan's lead is back at or under `weeklyPaceLeadPts`. An Opus pause ends when the plan's Opus share is at or under `maxOpusSharePct`, the plan's weekly estimate is under `opusRuleMinWeekPct`, or the limit is unset. While either ratio is unset, pace and Opus pauses stay in force, because the plan estimate is unknown. A pause with several reasons ends when every reason has ended. A pause is the plugin's own only while the agent is paused with the same `pausedAt` that `agents.pause` returned. If the Board resumes and pauses the agent again, `pausedAt` changes and the plugin lets go of it. If the Board resumes an agent that is still over its weekly share, rule 3 pauses it again on the next run. To keep it running, add its ID to `exemptAgentIds`.
 
 ## Safety
 
@@ -68,13 +68,13 @@ The plugin resumes an agent only when it paused that agent and the windows of th
 
 Usage comes from `cost_events` through `ctx.db.query` (`database.namespace.read`). The table carries the model, so Opus and Sonnet are separated. The costs REST API would need `http.outbound` and a token that a worker may not have.
 
-A run that is cancelled (for example `issue_reassigned`) has no `usage_json` and no `cost_events` rows, so its tokens are invisible. The plugin counts `cancelled` runs in `heartbeat_runs` that have no usage record and no cost events, and charges each `cancelledRunAllowanceTokens` at the Sonnet ratio. The digest reports the count. The allowance is a guess until the Board calibrates it.
+A run that is cancelled (for example `issue_reassigned`) has no `usage_json` and no `cost_events` rows, so its tokens are invisible. The plugin counts `cancelled` runs in `heartbeat_runs` that started (`started_at` is set) and have no usage record and no cost events. Each of those runs is charged `cancelledRunAllowanceTokens` at the Sonnet ratio. Runs cancelled before they started, such as a queue cleared by a pause, are not charged. The digest reports the count. The allowance is a guess until the Board calibrates it.
 
 ## Capabilities
 
 `agents.read`, `agents.pause`, `agents.resume`, `jobs.schedule`, `issue.comments.create`, `plugin.state.read`, `plugin.state.write`, `database.namespace.read`, `database.namespace.migrate`.
 
-The database declaration forces the migrate capability and `migrationsDir`. `migrations/001_noop.sql` is a no-op (`SELECT 1;`). It only satisfies the `migrationsDir` requirement; the plugin owns no tables. The digest and the worker log record every action.
+The database declaration forces the migrate capability and `migrationsDir`. `migrations/` holds only `.gitkeep`. The host rejects a `SELECT 1` migration at install, and its loader reads only `*.sql` files, so the empty directory satisfies `migrationsDir`; the plugin owns no tables. The digest and the worker log record every action.
 
 ## Develop
 
