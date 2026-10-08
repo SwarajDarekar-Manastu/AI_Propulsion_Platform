@@ -211,6 +211,23 @@ describe("resume rule", () => {
     expect(windowReset(paused(["opus-share"], "2026-10-06T09:00:00.000Z"), new Date("2026-10-06T10:00:00.000Z"), settings, { plan: over, weekElapsedPct: 50 })).toBe(true);
   });
 
+  it("ends an Opus pause when the limit is unset, whatever the ratios", () => {
+    const entry = paused(["opus-share"], "2026-10-06T09:00:00.000Z");
+    const now = new Date("2026-10-06T10:00:00.000Z");
+    const over = planOf([{ id: "a", week: { opus: 6_000_000 } }]);
+    const state = { plan: over, weekElapsedPct: 50 };
+    expect(windowReset(entry, now, resolveSettings({ opusPctPerMillion: 1, sonnetPctPerMillion: 0.2 }), state)).toBe(true);
+    expect(windowReset(entry, now, resolveSettings({ opusPctPerMillion: 1 }), state)).toBe(true);
+    expect(windowReset(entry, now, resolveSettings({}), state)).toBe(true);
+  });
+
+  it("keeps an Opus pause while a ratio is unset and the limit is set", () => {
+    const entry = paused(["opus-share"], "2026-10-06T09:00:00.000Z");
+    const now = new Date("2026-10-06T10:00:00.000Z");
+    const state = { plan: planOf([{ id: "a", week: { opus: 6_000_000 } }]), weekElapsedPct: 50 };
+    expect(windowReset(entry, now, resolveSettings({ opusPctPerMillion: 1, maxOpusSharePct: 60 }), state)).toBe(false);
+  });
+
   it("waits for every recorded window", () => {
     const entry = paused(["session", "weekly-share"], "2026-10-07T12:00:00.000Z");
     expect(windowReset(entry, new Date("2026-10-11T12:00:00.000Z"), settings, calm)).toBe(false);

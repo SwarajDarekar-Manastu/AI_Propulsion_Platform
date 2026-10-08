@@ -148,6 +148,7 @@ export function reasonEnded(violation: Violation, entry: PausedEntry, now: Date,
     case "weekly-pace":
       return settings.opusPctPerMillion !== null && settings.sonnetPctPerMillion !== null && !paceBreached(state.plan, state, settings);
     case "opus-share":
+      if (settings.maxOpusSharePct === null) return true;
       return settings.opusPctPerMillion !== null && settings.sonnetPctPerMillion !== null && !opusShareBreached(state.plan, settings);
   }
 }
