@@ -1,0 +1,31 @@
+{
+  "name": "loop-watchdog",
+  "version": "0.1.0",
+  "type": "module",
+  "private": true,
+  "description": "Pauses agents that loop: too many wakes on one task, or token use far above their own norm",
+  "scripts": {
+    "build": "node ./esbuild.config.mjs",
+    "test": "vitest run --config ./vitest.config.ts",
+    "typecheck": "tsc --noEmit",
+    "lint": "eslint ."
+  },
+  "paperclipPlugin": {
+    "manifest": "./dist/manifest.js",
+    "worker": "./dist/worker.js"
+  },
+  "license": "MIT",
+  "dependencies": {
+    "@paperclipai/plugin-sdk": "2026.1005.0"
+  },
+  "devDependencies": {
+    "@eslint/js": "^9.39.5",
+    "@types/node": "^24.0.0",
+    "esbuild": "^0.27.3",
+    "eslint": "^9.39.5",
+    "typescript": "^5.7.3",
+    "typescript-eslint": "^8.71.1",
+    "vitest": "^3.0.5"
+  },
+  "packageManager": "pnpm@12.10.1"
+}
