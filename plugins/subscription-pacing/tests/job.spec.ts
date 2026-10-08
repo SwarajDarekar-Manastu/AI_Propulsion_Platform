@@ -14,6 +14,7 @@ const COMPANY = "11111111-1111-1111-1111-111111111111";
 const SECOND_COMPANY = "33333333-3333-3333-3333-333333333333";
 const UNCONFIGURED_COMPANY = "44444444-4444-4444-4444-444444444444";
 const DIGEST_ISSUE = "22222222-2222-2222-2222-222222222222";
+const SECOND_DIGEST_ISSUE = "55555555-5555-5555-5555-555555555555";
 const NOW = new Date("2026-10-08T12:00:00Z");
 
 function agent(id: string, status: Agent["status"], pauseReason: Agent["pauseReason"] = null, pausedAt: Date | null = null, companyId = COMPANY): Agent {
@@ -48,10 +49,10 @@ function hostWith(configs: Record<string, Record<string, unknown>>): ConfigGet {
   };
 }
 
-async function setup(config: Record<string, unknown> | null, agents: Agent[], rows: Row[], cancelled: unknown[] = []) {
+async function setup(config: Record<string, unknown> | null, agents: Agent[], rows: Row[], cancelled: unknown[] = [], leadingCompanyIds: string[] = []) {
   const harness = createTestHarness({ manifest, capabilities: [...manifest.capabilities, "issue.comments.read"] });
   harness.seed({
-    companies: [{ id: COMPANY, name: "Manastu" } as Company],
+    companies: [...leadingCompanyIds.map((id) => ({ id, name: "Unconfigured" }) as Company), { id: COMPANY, name: "Manastu" } as Company],
     agents,
     issues: [{ id: DIGEST_ISSUE, companyId: COMPANY, title: "Digest" } as Issue],
   });
@@ -360,6 +361,32 @@ describe("company context", () => {
     harness.seed({ companies: [{ id: UNCONFIGURED_COMPANY, name: "Unconfigured" } as Company] });
     await expect(harness.runJob(JOB_KEY)).resolves.toBeUndefined();
     expect(await statusOf(harness, "a1")).toBe("paused");
+  });
+
+  it("keeps pacing a configured company listed after an unconfigured one", async () => {
+    const harness = await setup(ENFORCE, [agent("a1", "idle")], [hot], [], [UNCONFIGURED_COMPANY]);
+    await harness.runJob(JOB_KEY);
+    expect(await statusOf(harness, "a1")).toBe("paused");
+  });
+
+  it("gives each company its own digest state and issue", async () => {
+    const harness = await setup(ENFORCE, [agent("a1", "idle")], [hot]);
+    harness.seed({
+      companies: [{ id: SECOND_COMPANY, name: "Second" } as Company],
+      agents: [agent("b1", "idle", null, null, SECOND_COMPANY)],
+      issues: [{ id: SECOND_DIGEST_ISSUE, companyId: SECOND_COMPANY, title: "Second digest" } as Issue],
+    });
+    harness.ctx.config.get = hostWith({
+      [COMPANY]: ENFORCE,
+      [SECOND_COMPANY]: { ...ENFORCE, digestIssueId: SECOND_DIGEST_ISSUE },
+    });
+    harness.ctx.db.query = (async (sql: string, params: unknown[]) => {
+      if (sql.includes("heartbeat_runs")) return [];
+      return params[0] === SECOND_COMPANY ? [] : [hot];
+    }) as typeof harness.ctx.db.query;
+    await harness.runJob(JOB_KEY);
+    expect(await harness.ctx.issues.listComments(DIGEST_ISSUE, COMPANY)).toHaveLength(1);
+    expect(await harness.ctx.issues.listComments(SECOND_DIGEST_ISSUE, SECOND_COMPANY)).toHaveLength(1);
   });
 
   it("fails the run when reading a configured company's config fails for another reason", async () => {
