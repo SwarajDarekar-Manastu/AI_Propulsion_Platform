@@ -195,10 +195,17 @@ describe("Rule T: tokens against the agent's own median", () => {
   });
 
   it("reads the settings of the company that the finished run belongs to", async () => {
-    const h = await setup(enforce, [{ ...agent("a1"), companyId: OTHER_COMPANY }], [...history("a1", 10, TOKENS_1000), current(6001)]);
-    const getConfig = vi.spyOn(h.ctx.config, "get");
+    const runs = [...history("a1", 10, TOKENS_1000), current(6001)].map((run) => ({ ...run, companyId: OTHER_COMPANY }));
+    const h = await setup(enforce, [{ ...agent("a1"), companyId: OTHER_COMPANY }], runs);
+    h.ctx.config.get = async (companyId?: string) => (companyId === OTHER_COMPANY ? enforce : { mode: "off" });
+    const pause = h.ctx.agents.pause;
+    const pauses: unknown[][] = [];
+    h.ctx.agents.pause = async (agentId, companyId) => {
+      pauses.push([agentId, companyId]);
+      return pause(agentId, companyId);
+    };
     await h.emit("agent.run.finished", { runId: "cur", agentId: "a1", issueId: TASK, status: "succeeded" }, { companyId: OTHER_COMPANY, occurredAt: new Date(T0).toISOString() });
-    expect(getConfig).toHaveBeenCalledWith(OTHER_COMPANY);
+    expect(pauses).toEqual([["a1", OTHER_COMPANY]]);
   });
 });
 
