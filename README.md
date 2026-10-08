@@ -1,10 +1,8 @@
 # AI Propulsion Platform
 
-This repository holds the engineering work for the AI Propulsion Platform. Agents and people change it through reviewed pull requests. Only the Release Manager merges to `main`, after the Board approves.
+This repository holds the engineering work for the AI Propulsion Platform. Agents and people change it through reviewed pull requests.
 
 ## How code reaches main
-
-Work reaches `main` in four steps:
 
 1. Each task gets its own branch from `release` and one draft PR against `release`.
 2. Reviews follow the task's risk tier: Light goes to the Senior Developer; Standard adds the Validation Engineer; Heavy adds QA and specialists. The Board then approves in Paperclip.
