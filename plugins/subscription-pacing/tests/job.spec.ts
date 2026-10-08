@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createTestHarness } from "@paperclipai/plugin-sdk/testing";
-import type { PluginContext } from "@paperclipai/plugin-sdk";
+import { JsonRpcCallError, PLUGIN_RPC_ERROR_CODES, type PluginContext } from "@paperclipai/plugin-sdk";
 import manifest, { JOB_KEY } from "../src/manifest.js";
 import plugin from "../src/worker.js";
 import { formatDigest, runPacing } from "../src/pacing.js";
@@ -41,7 +41,9 @@ type ConfigGet = PluginContext["config"]["get"];
 function hostWith(configs: Record<string, Record<string, unknown>>): ConfigGet {
   return async (companyId?: string) => {
     const config = companyId === undefined ? undefined : configs[companyId];
-    if (config === undefined) throw new Error("company context is required");
+    if (config === undefined) {
+      throw new JsonRpcCallError({ code: PLUGIN_RPC_ERROR_CODES.INVOCATION_SCOPE_DENIED, message: "company context is required" });
+    }
     return { ...config };
   };
 }
@@ -338,12 +340,19 @@ describe("company context", () => {
       agents: [agent("b1", "idle", null, null, SECOND_COMPANY)],
     });
     harness.ctx.config.get = hostWith({ [COMPANY]: ENFORCE, [SECOND_COMPANY]: ENFORCE });
+    harness.ctx.db.query = (async (sql: string, params: unknown[]) => {
+      if (sql.includes("heartbeat_runs")) return [];
+      return params[0] === SECOND_COMPANY ? [{ ...hot, agent_id: "b1" }] : [hot];
+    }) as typeof harness.ctx.db.query;
     await harness.runJob(JOB_KEY);
     expect(await statusOf(harness, "a1")).toBe("paused");
+    expect((await harness.ctx.agents.get("b1", SECOND_COMPANY))?.status).toBe("paused");
 
+    vi.setSystemTime(new Date("2026-10-08T17:00:00Z"));
     harness.ctx.db.query = (async () => []) as typeof harness.ctx.db.query;
-    await pace(harness.ctx, new Date("2026-10-08T17:00:00Z"));
+    await harness.runJob(JOB_KEY);
     expect(await statusOf(harness, "a1")).toBe("idle");
+    expect((await harness.ctx.agents.get("b1", SECOND_COMPANY))?.status).toBe("idle");
   });
 
   it("skips a company with no stored config instead of failing the run", async () => {
@@ -351,5 +360,14 @@ describe("company context", () => {
     harness.seed({ companies: [{ id: UNCONFIGURED_COMPANY, name: "Unconfigured" } as Company] });
     await expect(harness.runJob(JOB_KEY)).resolves.toBeUndefined();
     expect(await statusOf(harness, "a1")).toBe("paused");
+  });
+
+  it("fails the run when reading a configured company's config fails for another reason", async () => {
+    const harness = await setup(ENFORCE, [agent("a1", "idle")], [hot]);
+    harness.ctx.config.get = async () => {
+      throw new Error("connection terminated");
+    };
+    await expect(harness.runJob(JOB_KEY)).rejects.toThrow("connection terminated");
+    expect(await statusOf(harness, "a1")).toBe("idle");
   });
 });

@@ -1,4 +1,10 @@
-import { definePlugin, runWorker, type PluginContext } from "@paperclipai/plugin-sdk";
+import {
+  definePlugin,
+  JsonRpcCallError,
+  PLUGIN_RPC_ERROR_CODES,
+  runWorker,
+  type PluginContext,
+} from "@paperclipai/plugin-sdk";
 import { JOB_KEY } from "./manifest.js";
 import { postDigest, runPacing } from "./pacing.js";
 import { resolveSettings } from "./settings.js";
@@ -7,8 +13,11 @@ async function storedConfig(ctx: PluginContext, companyId: string): Promise<Reco
   try {
     return await ctx.config.get(companyId);
   } catch (error) {
-    ctx.logger.info("No stored pacing config for company; skipped", { companyId, error: String(error) });
-    return null;
+    if (error instanceof JsonRpcCallError && error.code === PLUGIN_RPC_ERROR_CODES.INVOCATION_SCOPE_DENIED) {
+      ctx.logger.info("No stored pacing config for company; skipped", { companyId, error: String(error) });
+      return null;
+    }
+    throw error;
   }
 }
 
