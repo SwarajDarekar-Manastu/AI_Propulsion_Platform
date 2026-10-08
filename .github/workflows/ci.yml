@@ -12,7 +12,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        plugin: [subscription-pacing]
+        plugin: [subscription-pacing, loop-watchdog]
     defaults:
       run:
         working-directory: plugins/${{ matrix.plugin }}
