@@ -2,6 +2,15 @@
 
 This repository holds the engineering work for the AI Propulsion Platform. Agents and people change it through reviewed pull requests. Only the Release Manager merges to `main`, after the Board approves.
 
+## How code reaches main
+
+Work reaches `main` in four steps:
+
+1. Each task gets its own branch from `release` and one draft PR against `release`.
+2. Reviews follow the task's risk tier: Light goes to the Senior Developer; Standard adds the Validation Engineer; Heavy adds QA and specialists. The Board then approves in Paperclip.
+3. After the Board approves, the Release Manager lands the PR into `release` with a squash merge.
+4. Only the Board merges `release` into `main`.
+
 ## `.claude/`
 
 `.claude/` holds the department's shared tooling:
